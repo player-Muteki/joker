@@ -1,20 +1,25 @@
 [package]
 name = "joker-tui"
-version = "0.1.0"
+version = "0.0.1"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+default-run = "joker"
 
 [[bin]]
-name = "joker-tui"
-path = "src/main.rs"
+name = "joker"
+path = "src/bin/joker.rs"
+doc = false
 
 [dependencies]
 clap.workspace = true
 crossterm.workspace = true
 futures-util.workspace = true
 joker = { path = "../joker" }
+joker-config = { path = "../joker-config" }
+joker-provider-openai = { path = "../joker-provider-openai" }
+joker-tools = { path = "../joker-tools" }
 ratatui.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

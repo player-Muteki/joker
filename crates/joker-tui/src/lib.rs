@@ -2,6 +2,8 @@
 #![deny(unreachable_pub)]
 
 pub mod app;
+pub mod cli;
+pub mod commands;
 pub mod driver;
 pub mod error;
 pub mod event;

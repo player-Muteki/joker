@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use joker_config::RuntimeConfig;
 use joker_tui::driver::AgentDriver;
 use joker_tui::event::UiEvent;
 use tokio::sync::mpsc;
@@ -8,7 +9,13 @@ use tokio_util::sync::CancellationToken;
 #[tokio::test]
 async fn scripted_driver_sends_agent_events_and_completion() {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let driver = AgentDriver::new("hi from driver", false);
+    let driver = AgentDriver::new(
+        RuntimeConfig {
+            scripted_response: "hi from driver".into(),
+            ..RuntimeConfig::default()
+        },
+        std::env::current_dir().unwrap(),
+    );
 
     let handle = driver
         .spawn_run("hello".into(), CancellationToken::new(), tx)
@@ -38,7 +45,14 @@ async fn scripted_driver_sends_agent_events_and_completion() {
 #[tokio::test]
 async fn demo_tool_sends_tool_events() {
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let driver = AgentDriver::new("done", true);
+    let driver = AgentDriver::new(
+        RuntimeConfig {
+            scripted_response: "done".into(),
+            demo_tool: true,
+            ..RuntimeConfig::default()
+        },
+        std::env::current_dir().unwrap(),
+    );
 
     let handle = driver
         .spawn_run("echo me".into(), CancellationToken::new(), tx)

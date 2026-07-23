@@ -8,6 +8,8 @@ pub enum TuiError {
     Io(#[from] std::io::Error),
     #[error("agent run failed: {0}")]
     Agent(String),
+    #[error("config error: {0}")]
+    Config(#[from] joker_config::ConfigError),
     #[error("event channel closed")]
     ChannelClosed,
 }

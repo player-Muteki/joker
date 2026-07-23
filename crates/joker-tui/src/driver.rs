@@ -1,10 +1,13 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use joker::{
     Agent, Content, ModelResponseEvent, Observer, ObserverFuture, RunRequest, ScriptedModel,
     ScriptedStep, StopReason, ToolAnnotations, ToolDefinition, ToolFn, ToolFuture, ToolInvocation,
-    ToolName, ToolOutput, ToolRegistry,
+    ToolName, ToolOutput,
 };
+use joker_config::{ProviderSelection, RuntimeConfig};
+use joker_provider_openai::OpenAiCompatibleModel;
+use joker_tools::readonly_tool_registry;
 use serde_json::json;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -35,17 +38,21 @@ impl Observer for ChannelObserver {
 
 #[derive(Clone, Debug)]
 pub struct AgentDriver {
-    scripted_response: String,
-    demo_tool: bool,
+    runtime_config: RuntimeConfig,
+    workspace: PathBuf,
 }
 
 impl AgentDriver {
     #[must_use]
-    pub fn new(scripted_response: impl Into<String>, demo_tool: bool) -> Self {
+    pub fn new(runtime_config: RuntimeConfig, workspace: impl Into<PathBuf>) -> Self {
         Self {
-            scripted_response: scripted_response.into(),
-            demo_tool,
+            runtime_config,
+            workspace: workspace.into(),
         }
+    }
+
+    pub fn set_runtime_config(&mut self, runtime_config: RuntimeConfig) {
+        self.runtime_config = runtime_config;
     }
 
     pub fn spawn_run(
@@ -69,22 +76,37 @@ impl AgentDriver {
         prompt: String,
         tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
     ) -> Result<Agent, TuiError> {
-        let model = Arc::new(ScriptedModel::new(self.steps_for(prompt))) as Arc<dyn joker::Model>;
+        let model = self.build_model(prompt)?;
         let mut agent = Agent::new(model).with_observer(Arc::new(ChannelObserver::new(tx)));
 
-        if self.demo_tool {
-            let mut registry = ToolRegistry::new();
+        let mut registry = readonly_tool_registry(&self.workspace)
+            .map_err(|error| TuiError::Agent(error.to_string()))?;
+        if self.runtime_config.demo_tool {
             registry
                 .insert(make_echo_tool())
                 .map_err(|error| TuiError::Agent(error.to_string()))?;
-            agent = agent.with_tools(Arc::new(registry));
         }
+        agent = agent.with_tools(Arc::new(registry));
 
         Ok(agent)
     }
 
-    fn steps_for(&self, prompt: String) -> Vec<ScriptedStep> {
-        if self.demo_tool {
+    fn build_model(&self, prompt: String) -> Result<Arc<dyn joker::Model>, TuiError> {
+        match &self.runtime_config.provider {
+            ProviderSelection::Scripted { .. } => {
+                Ok(Arc::new(ScriptedModel::new(self.scripted_steps(prompt)))
+                    as Arc<dyn joker::Model>)
+            }
+            ProviderSelection::OpenAiCompatible(config) => Ok(Arc::new(
+                OpenAiCompatibleModel::new(config.clone())
+                    .map_err(|error| TuiError::Agent(error.to_string()))?,
+            )
+                as Arc<dyn joker::Model>),
+        }
+    }
+
+    fn scripted_steps(&self, prompt: String) -> Vec<ScriptedStep> {
+        if self.runtime_config.demo_tool {
             vec![
                 ScriptedStep::message(
                     vec![
@@ -97,11 +119,13 @@ impl AgentDriver {
                     ],
                     StopReason::ToolUse,
                 ),
-                ScriptedStep::Events(streaming_text_events(&self.scripted_response)),
+                ScriptedStep::Events(streaming_text_events(
+                    &self.runtime_config.scripted_response,
+                )),
             ]
         } else {
             vec![ScriptedStep::Events(streaming_text_events(
-                &self.scripted_response,
+                &self.runtime_config.scripted_response,
             ))]
         }
     }

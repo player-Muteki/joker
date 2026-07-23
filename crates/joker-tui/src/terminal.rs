@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     TuiError,
     app::{App, AppAction},
+    commands::{self, CommandAction},
     driver::AgentDriver,
     event::UiEvent,
     widgets,
@@ -24,8 +25,8 @@ use crate::{
 pub struct TuiOptions {
     pub initial_prompt: Option<String>,
     pub use_alt_screen: bool,
-    pub scripted_response: String,
-    pub demo_tool: bool,
+    pub config_store: joker_config::ConfigStore,
+    pub runtime_config: joker_config::RuntimeConfig,
 }
 
 pub async fn run_tui(options: TuiOptions) -> Result<(), TuiError> {
@@ -35,14 +36,21 @@ pub async fn run_tui(options: TuiOptions) -> Result<(), TuiError> {
     spawn_terminal_events(tx.clone());
     spawn_tick_events(tx.clone());
 
-    let mut app = App::new();
-    let driver = AgentDriver::new(options.scripted_response, options.demo_tool);
+    let mut app = App::with_config(options.runtime_config.clone());
+    let workspace = std::env::current_dir()?;
+    let mut driver = AgentDriver::new(options.runtime_config, workspace);
 
     if let Some(prompt) = options.initial_prompt {
         app.composer = prompt;
         app.cursor = app.composer.len();
-        if let Some(prompt) = app.submit_prompt() {
-            spawn_agent_run(&mut app, &driver, prompt, tx.clone());
+        if let Some(action) = app.submit_prompt() {
+            handle_action(
+                &mut app,
+                &mut driver,
+                &options.config_store,
+                action,
+                tx.clone(),
+            );
         }
     }
 
@@ -56,7 +64,13 @@ pub async fn run_tui(options: TuiOptions) -> Result<(), TuiError> {
         match event {
             UiEvent::Terminal(CrosstermEvent::Key(key)) if key.kind == KeyEventKind::Press => {
                 if let Some(action) = app.handle_key(key) {
-                    handle_action(&mut app, &driver, action, tx.clone());
+                    handle_action(
+                        &mut app,
+                        &mut driver,
+                        &options.config_store,
+                        action,
+                        tx.clone(),
+                    );
                 }
             }
             UiEvent::Terminal(CrosstermEvent::Resize(_, _)) | UiEvent::Tick => {}
@@ -116,15 +130,34 @@ fn spawn_tick_events(tx: mpsc::UnboundedSender<UiEvent>) {
 
 fn handle_action(
     app: &mut App,
-    driver: &AgentDriver,
+    driver: &mut AgentDriver,
+    config_store: &joker_config::ConfigStore,
     action: AppAction,
     tx: mpsc::UnboundedSender<UiEvent>,
 ) {
     match action {
         AppAction::Submit(prompt) => spawn_agent_run(app, driver, prompt, tx),
+        AppAction::Command(command) => {
+            let result = commands::execute(&command, app, config_store);
+            if let Some(action) = result.action {
+                handle_command_action(app, driver, action);
+            }
+        }
         AppAction::Cancel => app.cancel_running(),
         AppAction::Quit => app.quit(),
         AppAction::Redraw => {}
+    }
+}
+
+fn handle_command_action(app: &mut App, driver: &mut AgentDriver, action: CommandAction) {
+    match action {
+        CommandAction::Cancel => app.cancel_running(),
+        CommandAction::Clear => app.transcript.clear(),
+        CommandAction::ConfigChanged => {
+            app.status = format!("Idle ({})", app.runtime_config.provider_label());
+            driver.set_runtime_config(app.runtime_config.clone());
+        }
+        CommandAction::Quit => app.quit(),
     }
 }
 

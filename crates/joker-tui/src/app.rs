@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use joker_config::RuntimeConfig;
 use tokio_util::sync::CancellationToken;
 
 use crate::event::UiEvent;
@@ -13,20 +14,28 @@ pub struct App {
     pub status: String,
     pub scroll: u16,
     pub cancellation_token: Option<CancellationToken>,
+    pub runtime_config: RuntimeConfig,
 }
 
 impl App {
     #[must_use]
     pub fn new() -> Self {
+        Self::with_config(RuntimeConfig::default())
+    }
+
+    #[must_use]
+    pub fn with_config(runtime_config: RuntimeConfig) -> Self {
+        let status = format!("Idle ({})", runtime_config.provider_label());
         Self {
             composer: String::new(),
             cursor: 0,
             transcript: vec![TranscriptItem::Status("Welcome to Joker TUI".into())],
             running: false,
             should_quit: false,
-            status: "Idle".into(),
+            status,
             scroll: 0,
             cancellation_token: None,
+            runtime_config,
         }
     }
 
@@ -46,7 +55,7 @@ impl App {
                     Some(AppAction::Quit)
                 }
             }
-            KeyCode::Enter => self.submit_prompt().map(AppAction::Submit),
+            KeyCode::Enter => self.submit_prompt(),
             KeyCode::Backspace => {
                 if let Some(previous) = previous_char_boundary(&self.composer, self.cursor) {
                     self.composer.drain(previous..self.cursor);
@@ -87,9 +96,17 @@ impl App {
         }
     }
 
-    pub fn submit_prompt(&mut self) -> Option<String> {
+    pub fn submit_prompt(&mut self) -> Option<AppAction> {
         let prompt = self.composer.trim().to_string();
-        if prompt.is_empty() || self.running {
+        if prompt.is_empty() {
+            return None;
+        }
+        if prompt.starts_with('/') {
+            self.composer.clear();
+            self.cursor = 0;
+            return Some(AppAction::Command(prompt));
+        }
+        if self.running {
             return None;
         }
         self.composer.clear();
@@ -97,7 +114,7 @@ impl App {
         self.transcript.push(TranscriptItem::User(prompt.clone()));
         self.running = true;
         self.status = "Running".into();
-        Some(prompt)
+        Some(AppAction::Submit(prompt))
     }
 
     pub fn cancel_running(&mut self) {
@@ -125,7 +142,9 @@ impl App {
                 self.running = false;
                 self.cancellation_token = None;
                 match result {
-                    Ok(_) => self.status = "Idle".into(),
+                    Ok(_) => {
+                        self.status = format!("Idle ({})", self.runtime_config.provider_label())
+                    }
                     Err(error) => {
                         self.status = "Error".into();
                         self.transcript.push(TranscriptItem::Error(error));
@@ -225,6 +244,7 @@ impl Default for App {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AppAction {
     Submit(String),
+    Command(String),
     Cancel,
     Quit,
     Redraw,

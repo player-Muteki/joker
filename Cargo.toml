@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/joker", "crates/joker-tui"]
+members = [
+    "crates/joker",
+    "crates/joker-config",
+    "crates/joker-provider-openai",
+    "crates/joker-tools",
+    "crates/joker-tui",
+]
 resolver = "2"
 
 [workspace.package]
@@ -14,11 +20,13 @@ futures-util = "0.3"
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.29"
 ratatui = "0.29"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", default-features = false, features = ["macros", "rt", "sync", "time"] }
 tokio-util = "0.7"
+toml = "0.9"
 tracing = "0.1"
 schemars = "1"
 unicode-width = "0.2"
