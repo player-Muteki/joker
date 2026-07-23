@@ -1,0 +1,26 @@
+[package]
+name = "joker-tui"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "joker-tui"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+crossterm.workspace = true
+futures-util.workspace = true
+joker = { path = "../joker" }
+ratatui.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio-util.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
