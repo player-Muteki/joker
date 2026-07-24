@@ -120,6 +120,16 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/deny [request_id] [reason?]",
         description: "Deny a pending tool call.",
     },
+    CommandInfo {
+        name: "sessions",
+        usage: "/sessions",
+        description: "List saved sessions.",
+    },
+    CommandInfo {
+        name: "compact",
+        usage: "/compact",
+        description: "Compact the conversation context.",
+    },
 ];
 
 pub fn execute(input: &str, app: &mut App, config_store: &ConfigStore) -> CommandResult {
@@ -144,6 +154,8 @@ pub fn execute(input: &str, app: &mut App, config_store: &ConfigStore) -> Comman
         "tools" => tools(app),
         "approve" => approve(app, args),
         "deny" => deny(app, args),
+        "sessions" => sessions(app),
+        "compact" => compact(app),
         other => unknown(other),
     };
 
@@ -444,6 +456,22 @@ fn deny(app: &mut App, args: Option<&str>) -> CommandResult {
         Some(r) => CommandResult::message(format!("Denied: {request_id} ({r})")),
         None => CommandResult::message(format!("Denied: {request_id}")),
     }
+}
+
+fn sessions(app: &App) -> CommandResult {
+    if app.running {
+        return CommandResult::error("Cannot list sessions while a run is active.");
+    }
+    // Session store not wired yet in this version
+    CommandResult::message("Session persistence not yet connected. Use /config save to save current config.")
+}
+
+fn compact(app: &mut App) -> CommandResult {
+    if !app.running {
+        return CommandResult::error("No run is active to compact.");
+    }
+    app.transcript.push(TranscriptItem::Status("Context compaction requested. Summary will be generated on next model call.".into()));
+    CommandResult::message("Compact request sent.")
 }
 
 fn unknown(name: &str) -> CommandResult {

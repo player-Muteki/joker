@@ -9,6 +9,7 @@ use std::{
 };
 
 pub mod fetch_url;
+pub mod memory;
 pub mod web_search;
 
 use joker::{
@@ -85,6 +86,10 @@ pub fn all_tool_registry(
             eprintln!("warning: failed to initialize web search: {e}");
         }
     }
+
+    // Memory tools
+    registry.insert(memory::MemoryReadTool::new(workspace.clone()))?;
+    registry.insert(memory::MemoryWriteTool::new(workspace.clone()))?;
 
     Ok(registry)
 }

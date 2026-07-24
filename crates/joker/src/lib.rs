@@ -8,6 +8,7 @@ mod event;
 mod model;
 mod policy;
 mod protocol;
+mod session;
 mod tool;
 mod web_search;
 
@@ -16,7 +17,7 @@ pub use agent::{
 };
 pub use context::{
     BuiltContext, ContextBuilder, ContextError, ContextFuture, ContextInput, ContextLimits,
-    FixedWindowContextBuilder, PassthroughContextBuilder,
+    FixedWindowContextBuilder, PassthroughContextBuilder, SummaryContextBuilder,
 };
 pub use error::RunError;
 pub use event::{Event, NoopObserver, Observer, ObserverFuture, RecordingObserver};
@@ -38,3 +39,7 @@ pub use tool::{
     ToolInvocation, ToolName, ToolOutput, ToolRegistry,
 };
 pub use web_search::{SearchFuture, SearchResult, WebSearch, WebSearchError};
+pub use session::{
+    JsonlSessionStore, SessionData, SessionError, SessionFuture, SessionInfo, SessionLoadFuture,
+    SessionListFuture, SessionStore,
+};

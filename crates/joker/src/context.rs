@@ -80,6 +80,130 @@ impl ContextBuilder for FixedWindowContextBuilder {
     }
 }
 
+/// Context builder that uses a summary string when conversations grow large.
+///
+/// Keeps the most recent messages and prepends a summary of earlier ones
+/// as a system message when the total message count exceeds the threshold.
+pub struct SummaryContextBuilder {
+    max_recent_messages: usize,
+    inner: Box<dyn ContextBuilder>,
+}
+
+impl SummaryContextBuilder {
+    #[must_use]
+    pub fn new(max_recent_messages: usize, inner: Box<dyn ContextBuilder>) -> Self {
+        Self {
+            max_recent_messages,
+            inner,
+        }
+    }
+
+    /// Summarize a conversation into a compact string.
+    /// This is a heuristic summary — in production you'd use an LLM call.
+    pub fn summarize_conversation(conversation: &Conversation) -> String {
+        let messages = conversation.messages();
+        if messages.is_empty() {
+            return String::new();
+        }
+
+        let mut parts: Vec<String> = Vec::new();
+        let mut user_msgs = 0usize;
+        let mut assistant_msgs = 0usize;
+        let mut tool_calls = 0usize;
+        let mut tool_results = 0usize;
+
+        for msg in messages {
+            match msg.role {
+                crate::Role::User => user_msgs += 1,
+                crate::Role::Assistant => {
+                    assistant_msgs += 1;
+                    for content in &msg.content {
+                        if matches!(content, Content::ToolCall(_)) {
+                            tool_calls += 1;
+                        }
+                    }
+                }
+                crate::Role::Tool => tool_results += 1,
+                crate::Role::System => {}
+            }
+        }
+
+        // Extract first user message as context clue
+        let first_user = messages
+            .iter()
+            .find(|m| m.role == crate::Role::User)
+            .and_then(|m| {
+                m.content
+                    .iter()
+                    .find_map(|c| match c {
+                        Content::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+            })
+            .unwrap_or_default();
+
+        parts.push(format!(
+            "This conversation has {} user messages, {} assistant messages, {} tool calls, and {} tool results.",
+            user_msgs, assistant_msgs, tool_calls, tool_results
+        ));
+
+        if !first_user.is_empty() {
+            parts.push(format!(
+                "The initial request was: \"{}\"",
+                Self::truncate_text(&first_user, 200)
+            ));
+        }
+
+        parts.push("Earlier messages have been summarized. Key context is preserved above.".into());
+        parts.join("\n")
+    }
+
+    fn truncate_text(text: &str, max: usize) -> String {
+        if text.len() <= max {
+            text.to_string()
+        } else {
+            format!("{}...", &text[..max])
+        }
+    }
+}
+
+impl ContextBuilder for SummaryContextBuilder {
+    fn build<'a>(&'a self, input: ContextInput<'a>) -> ContextFuture<'a> {
+        Box::pin(async move {
+            let messages = input.conversation.messages();
+
+            // If conversation is small enough, passthrough to inner builder
+            if messages.len() <= self.max_recent_messages {
+                return self.inner.build(input).await;
+            }
+
+            // Build a summary of older messages
+            let cutoff = messages.len() - self.max_recent_messages;
+            let older_msgs = &messages[..cutoff];
+            let recent_msgs = &messages[cutoff..];
+
+            // Create a temporary conversation for summarization
+            let older_conv = Conversation::from_messages(older_msgs.to_vec());
+            let summary = Self::summarize_conversation(&older_conv);
+
+            // Prepend summary as system message
+            let mut built = Vec::new();
+            if !summary.is_empty() {
+                built.push(Message {
+                    role: crate::Role::System,
+                    content: vec![Content::text(format!(
+                        "[Summary of earlier conversation]:\n{summary}"
+                    ))],
+                });
+            }
+            built.extend_from_slice(recent_msgs);
+
+            enforce_limits(&built, input.limits)?;
+            Ok(BuiltContext { messages: built })
+        })
+    }
+}
+
 fn enforce_limits(messages: &[Message], limits: ContextLimits) -> Result<(), ContextError> {
     if messages.len() > limits.max_messages {
         return Err(ContextError::LimitExceeded("messages"));
