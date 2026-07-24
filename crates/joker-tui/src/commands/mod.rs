@@ -110,6 +110,16 @@ pub const COMMANDS: &[CommandInfo] = &[
         usage: "/tools",
         description: "List enabled tools.",
     },
+    CommandInfo {
+        name: "approve",
+        usage: "/approve [request_id]",
+        description: "Approve a pending tool call.",
+    },
+    CommandInfo {
+        name: "deny",
+        usage: "/deny [request_id] [reason?]",
+        description: "Deny a pending tool call.",
+    },
 ];
 
 pub fn execute(input: &str, app: &mut App, config_store: &ConfigStore) -> CommandResult {
@@ -132,6 +142,8 @@ pub fn execute(input: &str, app: &mut App, config_store: &ConfigStore) -> Comman
         "models" => models(app),
         "config" => config(app, config_store, args),
         "tools" => tools(app),
+        "approve" => approve(app, args),
+        "deny" => deny(app, args),
         other => unknown(other),
     };
 
@@ -400,6 +412,38 @@ fn tools(app: &App) -> CommandResult {
         tools.push("echo");
     }
     CommandResult::message(tools.join("\n"))
+}
+
+fn approve(app: &mut App, args: Option<&str>) -> CommandResult {
+    if !app.running {
+        return CommandResult::error("No run is active.");
+    }
+    let request_id = args.unwrap_or("");
+    if request_id.is_empty() {
+        return CommandResult::error("Usage: /approve <request_id>");
+    }
+    app.approve_pending(request_id, false);
+    CommandResult::message(format!("Approved: {request_id}"))
+}
+
+fn deny(app: &mut App, args: Option<&str>) -> CommandResult {
+    if !app.running {
+        return CommandResult::error("No run is active.");
+    }
+    let Some(args) = args else {
+        return CommandResult::error("Usage: /deny <request_id> [reason]");
+    };
+    let mut parts = args.splitn(2, char::is_whitespace);
+    let request_id = parts.next().unwrap_or_default();
+    let reason = parts.next();
+    if request_id.is_empty() {
+        return CommandResult::error("Usage: /deny <request_id> [reason]");
+    }
+    app.deny_pending(request_id, reason);
+    match reason {
+        Some(r) => CommandResult::message(format!("Denied: {request_id} ({r})")),
+        None => CommandResult::message(format!("Denied: {request_id}")),
+    }
 }
 
 fn unknown(name: &str) -> CommandResult {

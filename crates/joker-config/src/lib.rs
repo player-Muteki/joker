@@ -143,6 +143,8 @@ impl RuntimeConfig {
             scripted_response: Some(self.scripted_response.clone()),
             demo_tool: Some(self.demo_tool),
             providers: BTreeMap::new(),
+            default_agent: None,
+            agent: BTreeMap::new(),
         }
     }
 }
@@ -229,6 +231,9 @@ pub struct FileConfig {
     pub demo_tool: Option<bool>,
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderConfig>,
+    pub default_agent: Option<String>,
+    #[serde(default)]
+    pub agent: BTreeMap<String, AgentProfileConfig>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -237,6 +242,39 @@ pub struct ProviderConfig {
     pub base_url: String,
     pub model: String,
     pub api_key_env: Option<String>,
+}
+
+/// Agent profile configuration, matching TOML `[agent.<name>]` sections.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct AgentProfileConfig {
+    pub model: Option<String>,
+    pub system: Option<String>,
+    #[serde(default)]
+    pub tools: BTreeMap<String, ToolPermissionConfig>,
+    #[serde(default)]
+    pub permissions: PermissionRuleConfig,
+}
+
+/// Per-tool permission configuration in TOML.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ToolPermissionConfig {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub permission: Option<String>,
+}
+
+/// Permission rule configuration for TOML.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct PermissionRuleConfig {
+    #[serde(default)]
+    pub deny: Vec<String>,
+    #[serde(default)]
+    pub ask: Vec<String>,
+    #[serde(default)]
+    pub allow: Vec<String>,
+    #[serde(default)]
+    pub remember_session_approvals: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

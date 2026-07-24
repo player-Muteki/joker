@@ -10,7 +10,9 @@ mod policy;
 mod protocol;
 mod tool;
 
-pub use agent::{Agent, AgentConfig, ExecutionMode, RunLimits, RunOutcome, RunRequest};
+pub use agent::{
+    Agent, AgentBuilder, AgentConfig, ExecutionMode, RunLimits, RunOutcome, RunRequest, ToolSet,
+};
 pub use context::{
     BuiltContext, ContextBuilder, ContextError, ContextFuture, ContextInput, ContextLimits,
     FixedWindowContextBuilder, PassthroughContextBuilder,
@@ -22,8 +24,9 @@ pub use model::{
     ScriptedStep,
 };
 pub use policy::{
-    AllowAllPolicy, DenyAllMutatingPolicy, PolicyFuture, ToolDecision, ToolPolicy,
-    ToolPolicyRequest,
+    AllowAllPolicy, ApprovalRequest, ApprovalResponse, DenyAllMutatingPolicy, PermissionPolicy,
+    PermissionRule, PolicyFuture, RulePattern, SharedApprovalChannel, ToolCategory, ToolDecision,
+    ToolPolicy, ToolPolicyRequest,
 };
 pub use protocol::{
     Content, Conversation, Message, ReasoningContent, Role, StopReason, TextContent, ToolCall,

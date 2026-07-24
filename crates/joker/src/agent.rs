@@ -4,10 +4,11 @@ use futures_util::{StreamExt, future::join_all};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    AllowAllPolicy, BuiltContext, Content, ContextBuilder, ContextInput, ContextLimits, Event,
-    Model, ModelRequest, ModelResponseEvent, NoopObserver, Observer, PassthroughContextBuilder,
-    RunError, StopReason, TextContent, ToolCall, ToolDecision, ToolInvocation, ToolName,
-    ToolPolicy, ToolPolicyRequest, ToolRegistry, ToolResult,
+    AllowAllPolicy, ApprovalRequest, ApprovalResponse, BuiltContext, Content, ContextBuilder,
+    ContextInput, ContextLimits, Event, Model, ModelRequest, ModelResponseEvent, NoopObserver,
+    Observer, PassthroughContextBuilder, RunError, SharedApprovalChannel, StopReason, TextContent,
+    ToolCall, ToolDecision, ToolInvocation, ToolName, ToolPolicy, ToolPolicyRequest, ToolRegistry,
+    ToolResult,
 };
 
 pub struct Agent {
@@ -17,6 +18,7 @@ pub struct Agent {
     policy: Arc<dyn ToolPolicy>,
     observer: Arc<dyn Observer>,
     config: AgentConfig,
+    approval_channel: Option<SharedApprovalChannel>,
 }
 
 impl Agent {
@@ -29,6 +31,7 @@ impl Agent {
             policy: Arc::new(AllowAllPolicy),
             observer: Arc::new(NoopObserver),
             config: AgentConfig::default(),
+            approval_channel: None,
         }
     }
 
@@ -57,13 +60,22 @@ impl Agent {
     }
 
     #[must_use]
+    pub fn with_approval_channel(mut self, channel: SharedApprovalChannel) -> Self {
+        self.approval_channel = Some(channel);
+        self
+    }
+
+    #[must_use]
     pub fn with_config(mut self, config: AgentConfig) -> Self {
         self.config = config;
         self
     }
 
     pub async fn run(&self, mut request: RunRequest) -> Result<RunOutcome, RunError> {
-        let cancellation_token = request.cancellation_token.clone().unwrap_or_default();
+        let cancellation_token = request
+            .cancellation_token
+            .clone()
+            .unwrap_or_else(CancellationToken::new);
         observe(&self.observer, Event::RunStarted).await;
 
         let mut stop_reason = StopReason::Stop;
@@ -232,6 +244,105 @@ impl Agent {
                 invocation.name.to_string(),
                 format!("tool denied by policy: {reason}"),
             ),
+            ToolDecision::Ask {
+                request_id,
+                reason,
+            } => {
+                // Extract subject from invocation arguments for display
+                let subject = invocation
+                    .arguments
+                    .get("path")
+                    .or_else(|| invocation.arguments.get("command"))
+                    .or_else(|| invocation.arguments.get("query"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                // Emit permission requested event
+                observe(
+                    &self.observer,
+                    Event::PermissionRequested {
+                        request_id: request_id.clone(),
+                        tool_name: invocation.name.to_string(),
+                        subject: subject.clone(),
+                        reason: reason.clone(),
+                    },
+                )
+                .await;
+
+                // Try to resolve via approval channel
+                let approval = if let Some(channel) = &self.approval_channel {
+                    channel.submit(ApprovalRequest {
+                        request_id: request_id.clone(),
+                        tool_name: invocation.name.to_string(),
+                        subject,
+                        reason,
+                    });
+                    // Poll for response with cancellation support
+                    loop {
+                        if cancellation_token.is_cancelled() {
+                            break Some(ApprovalResponse::Denied {
+                                reason: "cancelled".into(),
+                            });
+                        }
+                        if let Some(response) = channel.take_response() {
+                            break Some(response);
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                } else {
+                    None
+                };
+
+                match approval {
+                    Some(ApprovalResponse::Approved {
+                        remember_for_session: _,
+                    }) => {
+                        observe(
+                            &self.observer,
+                            Event::PermissionResolved {
+                                request_id,
+                                approved: true,
+                                reason: None,
+                            },
+                        )
+                        .await;
+                        self.tools.call(invocation).await
+                    }
+                    Some(ApprovalResponse::Denied { reason }) => {
+                        observe(
+                            &self.observer,
+                            Event::PermissionResolved {
+                                request_id,
+                                approved: false,
+                                reason: Some(reason.clone()),
+                            },
+                        )
+                        .await;
+                        ToolResult::error(
+                            invocation.call_id,
+                            invocation.name.to_string(),
+                            format!("tool denied by user: {reason}"),
+                        )
+                    }
+                    None => {
+                        observe(
+                            &self.observer,
+                            Event::PermissionResolved {
+                                request_id,
+                                approved: false,
+                                reason: Some("no approval channel".into()),
+                            },
+                        )
+                        .await;
+                        ToolResult::error(
+                            invocation.call_id,
+                            invocation.name.to_string(),
+                            "tool denied: no approval channel available",
+                        )
+                    }
+                }
+            }
         };
         observe(
             &self.observer,
@@ -241,6 +352,202 @@ impl Agent {
         )
         .await;
         Ok(result)
+    }
+}
+
+// ── AgentBuilder ────────────────────────────────────────────────────────
+
+/// Fluent builder for constructing an [`Agent`].
+///
+/// ```rust,ignore
+/// use joker::AgentBuilder;
+///
+/// let agent = AgentBuilder::new(model)
+///     .system_prompt("You are a coding agent.")
+///     .tools(tool_registry)
+///     .permissions(permission_policy)
+///     .observer(observer)
+///     .approval_channel(channel)
+///     .build();
+/// ```
+pub struct AgentBuilder {
+    model: Arc<dyn Model>,
+    tools: Option<Arc<ToolRegistry>>,
+    context_builder: Option<Arc<dyn ContextBuilder>>,
+    policy: Option<Arc<dyn ToolPolicy>>,
+    observer: Option<Arc<dyn Observer>>,
+    config: Option<AgentConfig>,
+    approval_channel: Option<SharedApprovalChannel>,
+    _system_prompt: Option<String>,
+}
+
+impl AgentBuilder {
+    #[must_use]
+    pub fn new(model: Arc<dyn Model>) -> Self {
+        Self {
+            model,
+            tools: None,
+            context_builder: None,
+            policy: None,
+            observer: None,
+            config: None,
+            approval_channel: None,
+            _system_prompt: None,
+        }
+    }
+
+    #[must_use]
+    pub fn tools(mut self, tools: Arc<ToolRegistry>) -> Self {
+        self.tools = Some(tools);
+        self
+    }
+
+    #[must_use]
+    pub fn context_builder(mut self, context_builder: Arc<dyn ContextBuilder>) -> Self {
+        self.context_builder = Some(context_builder);
+        self
+    }
+
+    #[must_use]
+    pub fn permissions(mut self, policy: Arc<dyn ToolPolicy>) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    #[must_use]
+    pub fn observer(mut self, observer: Arc<dyn Observer>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    #[must_use]
+    pub fn approval_channel(mut self, channel: SharedApprovalChannel) -> Self {
+        self.approval_channel = Some(channel);
+        self
+    }
+
+    #[must_use]
+    pub fn config(mut self, config: AgentConfig) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    #[must_use]
+    pub fn system_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self._system_prompt = Some(prompt.into());
+        self
+    }
+
+    #[must_use]
+    pub fn build(self) -> Agent {
+        let tools = self.tools.unwrap_or_else(|| Arc::new(ToolRegistry::new()));
+        let context_builder: Arc<dyn ContextBuilder> = self
+            .context_builder
+            .unwrap_or_else(|| Arc::new(PassthroughContextBuilder));
+        let policy: Arc<dyn ToolPolicy> = self
+            .policy
+            .unwrap_or_else(|| Arc::new(AllowAllPolicy));
+        let observer: Arc<dyn Observer> = self
+            .observer
+            .unwrap_or_else(|| Arc::new(NoopObserver));
+
+        Agent {
+            model: self.model,
+            tools,
+            context_builder,
+            policy,
+            observer,
+            config: self.config.unwrap_or_default(),
+            approval_channel: self.approval_channel,
+        }
+    }
+}
+
+// ── ToolSet ─────────────────────────────────────────────────────────────
+
+/// A builder for selecting which tool categories to include in an agent.
+///
+/// ```rust,ignore
+/// let tools = ToolSet::new()
+///     .read()           // list_files, read_file
+///     .grep()           // grep
+///     .write()          // write_file, edit_file, apply_patch
+///     .shell()          // shell
+///     .web_search()     // web_search, fetch_url
+///     .build(workspace)?;
+/// ```
+///
+/// Currently a stub — will be fully wired when `joker-tools` exposes categorized registries.
+pub struct ToolSet {
+    read: bool,
+    grep: bool,
+    write: bool,
+    shell: bool,
+    web_search: bool,
+}
+
+impl ToolSet {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            read: false,
+            grep: false,
+            write: false,
+            shell: false,
+            web_search: false,
+        }
+    }
+
+    #[must_use]
+    pub fn read(mut self) -> Self {
+        self.read = true;
+        self
+    }
+
+    #[must_use]
+    pub fn grep(mut self) -> Self {
+        self.grep = true;
+        self
+    }
+
+    #[must_use]
+    pub fn write(mut self) -> Self {
+        self.write = true;
+        self
+    }
+
+    #[must_use]
+    pub fn shell(mut self) -> Self {
+        self.shell = true;
+        self
+    }
+
+    #[must_use]
+    pub fn web_search(mut self) -> Self {
+        self.web_search = true;
+        self
+    }
+
+    /// Returns which categories are enabled.
+    #[must_use]
+    pub fn has_read(&self) -> bool { self.read }
+
+    #[must_use]
+    pub fn has_grep(&self) -> bool { self.grep }
+
+    #[must_use]
+    pub fn has_write(&self) -> bool { self.write }
+
+    #[must_use]
+    pub fn has_shell(&self) -> bool { self.shell }
+
+    #[must_use]
+    pub fn has_web_search(&self) -> bool { self.web_search }
+}
+
+impl Default for ToolSet {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -285,6 +592,7 @@ pub enum ExecutionMode {
 pub struct RunRequest {
     pub conversation: crate::Conversation,
     pub input: Option<String>,
+    pub approval_channel: Option<SharedApprovalChannel>,
     pub cancellation_token: Option<CancellationToken>,
 }
 
@@ -294,6 +602,7 @@ impl RunRequest {
         Self {
             conversation: crate::Conversation::new(),
             input: Some(input.into()),
+            approval_channel: None,
             cancellation_token: None,
         }
     }
@@ -303,8 +612,15 @@ impl RunRequest {
         Self {
             conversation,
             input: None,
+            approval_channel: None,
             cancellation_token: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_approval_channel(mut self, channel: SharedApprovalChannel) -> Self {
+        self.approval_channel = Some(channel);
+        self
     }
 
     #[must_use]

@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use joker::SharedApprovalChannel;
 use joker_config::RuntimeConfig;
 use joker_tui::driver::AgentDriver;
 use joker_tui::event::UiEvent;
@@ -18,7 +19,12 @@ async fn scripted_driver_sends_agent_events_and_completion() {
     );
 
     let handle = driver
-        .spawn_run("hello".into(), CancellationToken::new(), tx)
+        .spawn_run(
+            "hello".into(),
+            CancellationToken::new(),
+            tx,
+            SharedApprovalChannel::new(),
+        )
         .unwrap();
 
     let mut saw_delta = false;
@@ -43,33 +49,31 @@ async fn scripted_driver_sends_agent_events_and_completion() {
 }
 
 #[tokio::test]
-async fn demo_tool_sends_tool_events() {
+async fn scripted_driver_completes_with_writeable_tools() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let driver = AgentDriver::new(
         RuntimeConfig {
             scripted_response: "done".into(),
-            demo_tool: true,
             ..RuntimeConfig::default()
         },
         std::env::current_dir().unwrap(),
     );
 
     let handle = driver
-        .spawn_run("echo me".into(), CancellationToken::new(), tx)
+        .spawn_run(
+            "test".into(),
+            CancellationToken::new(),
+            tx,
+            SharedApprovalChannel::new(),
+        )
         .unwrap();
 
-    let mut saw_tool_started = false;
-    let mut saw_tool_finished = false;
+    let mut completed = false;
     while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
         match event {
-            UiEvent::Agent(joker::Event::ToolStarted { name, .. }) => {
-                saw_tool_started |= name == "echo";
-            }
-            UiEvent::Agent(joker::Event::ToolFinished { result }) => {
-                saw_tool_finished |= result.name == "echo" && !result.is_error;
-            }
             UiEvent::RunCompleted(result) => {
                 assert!(result.is_ok(), "run failed: {result:?}");
+                completed = true;
                 break;
             }
             _ => {}
@@ -77,6 +81,5 @@ async fn demo_tool_sends_tool_events() {
     }
 
     handle.await.unwrap();
-    assert!(saw_tool_started);
-    assert!(saw_tool_finished);
+    assert!(completed);
 }

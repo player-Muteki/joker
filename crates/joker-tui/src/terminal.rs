@@ -8,6 +8,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use joker::SharedApprovalChannel;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -214,9 +215,15 @@ fn spawn_agent_run(
 ) {
     let cancellation_token = CancellationToken::new();
     app.cancellation_token = Some(cancellation_token.clone());
-    if let Err(error) = driver.spawn_run(prompt, cancellation_token, tx) {
+
+    // Create a shared approval channel for UI ↔ agent communication
+    let approval_channel = SharedApprovalChannel::new();
+    app.approval_channel = Some(approval_channel.clone());
+
+    if let Err(error) = driver.spawn_run(prompt, cancellation_token, tx, approval_channel) {
         app.running = false;
         app.cancellation_token = None;
+        app.approval_channel = None;
         app.status = "Error".into();
         app.transcript
             .push(crate::app::TranscriptItem::Error(error.to_string()));

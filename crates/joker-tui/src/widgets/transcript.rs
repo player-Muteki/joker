@@ -65,6 +65,41 @@ fn item_lines(item: &TranscriptItem) -> Vec<Line<'static>> {
                 Style::default().fg(Color::Red),
             )]
         }
+        TranscriptItem::ApprovalRequest {
+            request_id,
+            tool_name,
+            subject,
+            reason,
+        } => {
+            let subject_display = if subject.is_empty() {
+                String::new()
+            } else {
+                format!(" ({subject})")
+            };
+            vec![
+                Line::from(vec![
+                    Span::styled(
+                        "🔐 Approval Needed",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(format!(" [{request_id}]")),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Tool: ", Style::default().fg(Color::Blue)),
+                    Span::raw(format!("{tool_name}{subject_display}")),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Reason: ", Style::default().fg(Color::DarkGray)),
+                    Span::raw(reason.clone()),
+                ]),
+                Line::from(vec![Span::styled(
+                    "  → Use /approve <id> or /deny <id> [reason]",
+                    Style::default().fg(Color::DarkGray),
+                )]),
+            ]
+        }
     }
 }
 

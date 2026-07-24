@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use joker::SharedApprovalChannel;
 use joker_config::RuntimeConfig;
 use tokio_util::sync::CancellationToken;
 
@@ -16,6 +17,8 @@ pub struct App {
     pub cancellation_token: Option<CancellationToken>,
     pub runtime_config: RuntimeConfig,
     pub dialog: Option<Dialog>,
+    /// Shared approval channel for the current run
+    pub approval_channel: Option<SharedApprovalChannel>,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +64,7 @@ impl App {
             cancellation_token: None,
             runtime_config,
             dialog: None,
+            approval_channel: None,
         }
     }
 
@@ -186,12 +190,35 @@ impl App {
         self.should_quit = true;
     }
 
+    /// Approve the pending tool with the given request_id.
+    pub fn approve_pending(&mut self, request_id: &str, remember_for_session: bool) {
+        if let Some(channel) = &self.approval_channel {
+            channel.respond(joker::ApprovalResponse::Approved {
+                remember_for_session,
+            });
+        }
+        self.transcript
+            .push(TranscriptItem::Status(format!("Approved: {request_id}")));
+    }
+
+    /// Deny the pending tool with the given request_id.
+    pub fn deny_pending(&mut self, request_id: &str, reason: Option<&str>) {
+        if let Some(channel) = &self.approval_channel {
+            channel.respond(joker::ApprovalResponse::Denied {
+                reason: reason.unwrap_or("denied by user").to_string(),
+            });
+        }
+        self.transcript
+            .push(TranscriptItem::Status(format!("Denied: {request_id}")));
+    }
+
     pub fn apply_ui_event(&mut self, event: UiEvent) {
         match event {
             UiEvent::Agent(event) => self.apply_agent_event(event),
             UiEvent::RunCompleted(result) => {
                 self.running = false;
                 self.cancellation_token = None;
+                self.approval_channel = None;
                 match result {
                     Ok(_) => {
                         self.status = format!("Idle ({})", self.runtime_config.provider_label())
@@ -251,6 +278,41 @@ impl App {
             }
             joker::Event::RunFinished { .. } => {
                 self.status = "Finishing".into();
+            }
+            joker::Event::PermissionRequested {
+                request_id,
+                tool_name,
+                subject,
+                reason,
+            } => {
+                self.status = format!("Approval needed: {tool_name}");
+                self.transcript.push(TranscriptItem::ApprovalRequest {
+                    request_id,
+                    tool_name,
+                    subject,
+                    reason,
+                });
+            }
+            joker::Event::PermissionResolved {
+                request_id,
+                approved,
+                reason: _,
+            } => {
+                if approved {
+                    self.status = "Approved".into();
+                } else {
+                    self.status = "Denied".into();
+                }
+                // Update the corresponding approval request item
+                if let Some(item) = self.transcript.iter_mut().rev().find(|item| {
+                    matches!(item, TranscriptItem::ApprovalRequest { request_id: id, .. } if id == &request_id)
+                }) {
+                    *item = TranscriptItem::Status(if approved {
+                        format!("✓ Approved: {request_id}")
+                    } else {
+                        format!("✗ Denied: {request_id}")
+                    });
+                }
             }
             joker::Event::ToolDelta { .. } => {}
             _ => {}
@@ -316,6 +378,12 @@ pub enum TranscriptItem {
         call_id: String,
         name: String,
         state: ToolState,
+    },
+    ApprovalRequest {
+        request_id: String,
+        tool_name: String,
+        subject: String,
+        reason: String,
     },
     Status(String),
     Error(String),

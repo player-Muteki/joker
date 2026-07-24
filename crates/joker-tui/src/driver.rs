@@ -1,14 +1,15 @@
 use std::{path::PathBuf, sync::Arc};
 
 use joker::{
-    Agent, Content, ModelResponseEvent, Observer, ObserverFuture, RunRequest, ScriptedModel,
-    ScriptedStep, StopReason, ToolAnnotations, ToolDefinition, ToolFn, ToolFuture, ToolInvocation,
-    ToolName, ToolOutput,
+    Agent, ModelResponseEvent, Observer, ObserverFuture, PermissionPolicy, PermissionRule,
+    RunRequest, ScriptedModel, ScriptedStep, SharedApprovalChannel, StopReason,
+    ToolAnnotations, ToolDefinition, ToolDecision, ToolFn, ToolFuture, ToolInvocation, ToolName,
+    ToolOutput, RulePattern,
 };
 use joker_config::{ProviderSelection, RuntimeConfig};
 use joker_provider::{anthropic, google};
 use joker_provider::OpenAiCompatibleModel;
-use joker_tools::readonly_tool_registry;
+use joker_tools::writeable_tool_registry;
 use serde_json::json;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -61,11 +62,15 @@ impl AgentDriver {
         prompt: String,
         cancellation_token: CancellationToken,
         tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+        approval_channel: SharedApprovalChannel,
     ) -> Result<JoinHandle<()>, TuiError> {
-        let agent = self.build_agent(prompt.clone(), tx.clone())?;
+        let agent = self.build_agent(tx.clone(), approval_channel.clone())?;
         Ok(tokio::spawn(async move {
+            let request = RunRequest::new(prompt)
+                .with_cancellation_token(cancellation_token)
+                .with_approval_channel(approval_channel);
             let result = agent
-                .run(RunRequest::new(prompt).with_cancellation_token(cancellation_token))
+                .run(request)
                 .await
                 .map_err(|error| error.to_string());
             let _ = tx.send(UiEvent::RunCompleted(result));
@@ -74,28 +79,100 @@ impl AgentDriver {
 
     fn build_agent(
         &self,
-        prompt: String,
         tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+        approval_channel: SharedApprovalChannel,
     ) -> Result<Agent, TuiError> {
-        let model = self.build_model(prompt)?;
-        let mut agent = Agent::new(model).with_observer(Arc::new(ChannelObserver::new(tx)));
+        let model = self.build_model()?;
+        let mut agent = Agent::new(model)
+            .with_observer(Arc::new(ChannelObserver::new(tx)))
+            .with_approval_channel(approval_channel);
 
-        let mut registry = readonly_tool_registry(&self.workspace)
+        // Use writeable tools by default (read-only + write_file, edit_file, shell)
+        let registry = writeable_tool_registry(&self.workspace)
             .map_err(|error| TuiError::Agent(error.to_string()))?;
-        if self.runtime_config.demo_tool {
-            registry
-                .insert(make_echo_tool())
-                .map_err(|error| TuiError::Agent(error.to_string()))?;
-        }
         agent = agent.with_tools(Arc::new(registry));
+
+        // Set up permission policy: mutating tools ask for approval by default,
+        // but low-risk commands are auto-approved.
+        let policy = PermissionPolicy::new()
+            .with_rules(vec![
+                // ── Hard denials ──
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("rm -rf".into()),
+                    ToolDecision::Deny {
+                        reason: "dangerous command".into(),
+                    },
+                ),
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("sudo".into()),
+                    ToolDecision::Deny {
+                        reason: "sudo not allowed".into(),
+                    },
+                ),
+                // ── Low-risk command auto-approvals ──
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("cargo".into()),
+                    ToolDecision::Allow,
+                ),
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("git".into()),
+                    ToolDecision::Allow,
+                ),
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("ls".into()),
+                    ToolDecision::Allow,
+                ),
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("cat".into()),
+                    ToolDecision::Allow,
+                ),
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("echo".into()),
+                    ToolDecision::Allow,
+                ),
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("pwd".into()),
+                    ToolDecision::Allow,
+                ),
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("mkdir".into()),
+                    ToolDecision::Allow,
+                ),
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("touch".into()),
+                    ToolDecision::Allow,
+                ),
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("head".into()),
+                    ToolDecision::Allow,
+                ),
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("tail".into()),
+                    ToolDecision::Allow,
+                ),
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("which".into()),
+                    ToolDecision::Allow,
+                ),
+                PermissionRule::new(
+                    RulePattern::CommandPrefix("date".into()),
+                    ToolDecision::Allow,
+                ),
+                // ── docs/ path writes auto-allowed ──
+                PermissionRule::new(
+                    RulePattern::PathPrefix("docs/".into()),
+                    ToolDecision::Allow,
+                ),
+            ]);
+        agent = agent.with_policy(Arc::new(policy));
 
         Ok(agent)
     }
 
-    fn build_model(&self, prompt: String) -> Result<Arc<dyn joker::Model>, TuiError> {
+    fn build_model(&self) -> Result<Arc<dyn joker::Model>, TuiError> {
         match &self.runtime_config.provider {
             ProviderSelection::Scripted { .. } => {
-                Ok(Arc::new(ScriptedModel::new(self.scripted_steps(prompt)))
+                Ok(Arc::new(ScriptedModel::new(self.scripted_steps()))
                     as Arc<dyn joker::Model>)
             }
             ProviderSelection::OpenAiCompatible(config) => Ok(Arc::new(
@@ -104,11 +181,10 @@ impl AgentDriver {
             )
                 as Arc<dyn joker::Model>),
             ProviderSelection::Anthropic { model, api_key } => {
-                let key = api_key.clone().unwrap_or_default();
                 let cfg = anthropic::AnthropicConfig {
                     base_url: anthropic::DEFAULT_BASE_URL.into(),
                     model: model.clone(),
-                    api_key: key,
+                    api_key: api_key.clone().unwrap_or_default(),
                 };
                 Ok(Arc::new(
                     anthropic::AnthropicModel::new(cfg)
@@ -117,11 +193,10 @@ impl AgentDriver {
                     as Arc<dyn joker::Model>)
             }
             ProviderSelection::Google { model, api_key } => {
-                let key = api_key.clone().unwrap_or_default();
                 let cfg = google::GoogleConfig {
                     base_url: google::DEFAULT_BASE_URL.into(),
                     model: model.clone(),
-                    api_key: key,
+                    api_key: api_key.clone().unwrap_or_default(),
                 };
                 Ok(Arc::new(
                     google::GoogleModel::new(cfg)
@@ -132,29 +207,10 @@ impl AgentDriver {
         }
     }
 
-    fn scripted_steps(&self, prompt: String) -> Vec<ScriptedStep> {
-        if self.runtime_config.demo_tool {
-            vec![
-                ScriptedStep::message(
-                    vec![
-                        Content::text("Calling demo echo tool...\n"),
-                        Content::ToolCall(joker::ToolCall {
-                            id: "demo-echo-1".into(),
-                            name: "echo".into(),
-                            arguments: json!({ "text": prompt }),
-                        }),
-                    ],
-                    StopReason::ToolUse,
-                ),
-                ScriptedStep::Events(streaming_text_events(
-                    &self.runtime_config.scripted_response,
-                )),
-            ]
-        } else {
-            vec![ScriptedStep::Events(streaming_text_events(
-                &self.runtime_config.scripted_response,
-            ))]
-        }
+    fn scripted_steps(&self) -> Vec<ScriptedStep> {
+        vec![ScriptedStep::Events(streaming_text_events(
+            &self.runtime_config.scripted_response,
+        ))]
     }
 }
 
@@ -176,6 +232,7 @@ fn streaming_text_events(text: &str) -> Vec<ModelResponseEvent> {
     events
 }
 
+#[allow(dead_code)]
 fn make_echo_tool() -> ToolFn<fn(ToolInvocation) -> ToolFuture<'static>> {
     fn echo(invocation: ToolInvocation) -> ToolFuture<'static> {
         Box::pin(async move {

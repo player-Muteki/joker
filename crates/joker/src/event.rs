@@ -22,6 +22,19 @@ pub enum Event {
     ToolDelta { call_id: String, delta: Value },
     ToolFinished { result: ToolResult },
     LimitReached { reason: String },
+    /// Emitted when the agent encounters an `Ask` decision from the policy.
+    PermissionRequested {
+        request_id: String,
+        tool_name: String,
+        subject: String,
+        reason: String,
+    },
+    /// Emitted when a permission request is resolved (approved or denied).
+    PermissionResolved {
+        request_id: String,
+        approved: bool,
+        reason: Option<String>,
+    },
 }
 
 #[derive(Default)]
