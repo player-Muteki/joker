@@ -9,7 +9,7 @@ use joker::{
 use joker_config::{ProviderSelection, RuntimeConfig};
 use joker_provider::{anthropic, google};
 use joker_provider::OpenAiCompatibleModel;
-use joker_tools::writeable_tool_registry;
+use joker_tools::all_tool_registry;
 use serde_json::json;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -87,8 +87,8 @@ impl AgentDriver {
             .with_observer(Arc::new(ChannelObserver::new(tx)))
             .with_approval_channel(approval_channel);
 
-        // Use writeable tools by default (read-only + write_file, edit_file, shell)
-        let registry = writeable_tool_registry(&self.workspace)
+        // Use all tools by default (read + write + network)
+        let registry = all_tool_registry(&self.workspace)
             .map_err(|error| TuiError::Agent(error.to_string()))?;
         agent = agent.with_tools(Arc::new(registry));
 

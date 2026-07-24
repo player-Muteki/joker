@@ -9,6 +9,7 @@ mod model;
 mod policy;
 mod protocol;
 mod tool;
+mod web_search;
 
 pub use agent::{
     Agent, AgentBuilder, AgentConfig, ExecutionMode, RunLimits, RunOutcome, RunRequest, ToolSet,
@@ -36,3 +37,4 @@ pub use tool::{
     Tool, ToolAnnotations, ToolDefinition, ToolError, ToolExecution, ToolFn, ToolFuture,
     ToolInvocation, ToolName, ToolOutput, ToolRegistry,
 };
+pub use web_search::{SearchFuture, SearchResult, WebSearch, WebSearchError};

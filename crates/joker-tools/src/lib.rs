@@ -8,11 +8,16 @@ use std::{
     sync::Arc,
 };
 
+pub mod fetch_url;
+pub mod web_search;
+
 use joker::{
     Tool, ToolAnnotations, ToolDefinition, ToolError, ToolExecution, ToolFuture, ToolInvocation,
     ToolName, ToolOutput, ToolRegistry,
 };
-use serde::{Deserialize, Serialize};
+use fetch_url::FetchUrlTool;
+use joker::WebSearch;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use thiserror::Error;
 
@@ -54,6 +59,7 @@ pub fn writeable_tool_registry(
     registry.insert(EditFileTool::new(workspace.clone()))?;
     registry.insert(ShellTool::new(workspace.clone()))?;
     registry.insert(ApplyPatchTool::new(workspace.clone()))?;
+    registry.insert(FetchUrlTool::new())?;
     Ok(registry)
 }
 
@@ -68,13 +74,17 @@ pub fn all_tool_registry(
     let workspace = workspace.into();
     let mut registry = writeable_tool_registry(workspace.clone())?;
 
-    // Web search tool — uses Brave Search API from env if available
-    let search_provider: Option<std::sync::Arc<dyn WebSearch>> = BraveSearchProvider::from_env()
-        .map(|p| std::sync::Arc::new(p) as std::sync::Arc<dyn WebSearch>);
-    registry.insert(WebSearchTool::new(search_provider))?;
-
-    // URL fetch tool
-    registry.insert(FetchUrlTool)?;
+    // Web search tool — DuckDuckGo backend (free, no API key needed)
+    match web_search::DuckDuckGoSearch::new() {
+        Ok(backend) => {
+            registry.insert(web_search::WebSearchTool::new(
+                std::sync::Arc::new(backend) as std::sync::Arc<dyn WebSearch>
+            ))?;
+        }
+        Err(e) => {
+            eprintln!("warning: failed to initialize web search: {e}");
+        }
+    }
 
     Ok(registry)
 }
@@ -893,327 +903,6 @@ struct PatchArgs {
     patch: String,
 }
 
-// ── WebSearch trait and network tools ───────────────────────────────────
-
-use std::fmt;
-
-/// Standardized search result item.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SearchResultItem {
-    pub title: String,
-    pub url: String,
-    pub snippet: String,
-}
-
-/// Standardized search response.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SearchResult {
-    pub items: Vec<SearchResultItem>,
-    pub total_estimate: Option<u64>,
-}
-
-/// Trait for web search providers.
-#[async_trait::async_trait]
-pub trait WebSearch: Send + Sync {
-    /// Search the web for the given query.
-    /// Returns a structured SearchResult.
-    async fn search(&self, query: &str, count: usize) -> Result<SearchResult, ToolsError>;
-}
-
-/// A simple built-in search provider that uses the Brave Search API.
-/// Requires the `BRAVE_SEARCH_API_KEY` environment variable to be set.
-pub struct BraveSearchProvider {
-    api_key: String,
-    client: reqwest::Client,
-}
-
-impl BraveSearchProvider {
-    pub fn new(api_key: String) -> Self {
-        Self {
-            api_key,
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(15))
-                .user_agent("Joker/0.1")
-                .build()
-                .unwrap_or_default(),
-        }
-    }
-
-    /// Create from environment variable, returning None if not set.
-    pub fn from_env() -> Option<Self> {
-        std::env::var("BRAVE_SEARCH_API_KEY").ok().map(Self::new)
-    }
-}
-
-#[async_trait::async_trait]
-impl WebSearch for BraveSearchProvider {
-    async fn search(&self, query: &str, count: usize) -> Result<SearchResult, ToolsError> {
-        let url = format!(
-            "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
-            urlencoding(query),
-            count.min(10)
-        );
-
-        let response = self
-            .client
-            .get(&url)
-            .header("Accept", "application/json")
-            .header("X-Subscription-Token", &self.api_key)
-            .send()
-            .await
-            .map_err(|e| ToolsError::ExecutionError(format!("search request failed: {e}")))?;
-
-        let status = response.status();
-        let body: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| ToolsError::ExecutionError(format!("search response parse failed: {e}")))?;
-
-        if !status.is_success() {
-            return Err(ToolsError::ExecutionError(format!(
-                "search API returned {status}: {body}"
-            )));
-        }
-
-        let mut items = Vec::new();
-        if let Some(web) = body.get("web") {
-            if let Some(results) = web.get("results").and_then(|r| r.as_array()) {
-                for result in results {
-                    items.push(SearchResultItem {
-                        title: result
-                            .get("title")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        url: result
-                            .get("url")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        snippet: result
-                            .get("description")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                    });
-                }
-            }
-        }
-
-        let total = body
-            .get("web")
-            .and_then(|w| w.get("total_results"))
-            .and_then(|v| v.as_u64());
-
-        Ok(SearchResult {
-            items,
-            total_estimate: total,
-        })
-    }
-}
-
-fn urlencoding(input: &str) -> String {
-    let mut result = String::new();
-    for byte in input.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                result.push(byte as char);
-            }
-            b' ' => result.push_str("%20"),
-            _ => {
-                result.push_str(&format!("%{:02X}", byte));
-            }
-        }
-    }
-    result
-}
-
-/// A web search tool that delegates to a [`WebSearch`] provider.
-#[derive(Clone)]
-pub struct WebSearchTool {
-    provider: Option<std::sync::Arc<dyn WebSearch>>,
-}
-
-impl WebSearchTool {
-    #[must_use]
-    pub fn new(provider: Option<std::sync::Arc<dyn WebSearch>>) -> Self {
-        Self { provider }
-    }
-
-    fn fmt(&self) -> &'static str {
-        "WebSearchTool"
-    }
-}
-
-impl fmt::Debug for WebSearchTool {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WebSearchTool").finish()
-    }
-}
-
-impl Tool for WebSearchTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: ToolName::new("web_search"),
-            description: "Search the web for information. Returns a list of relevant URLs and summaries.".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Search query." },
-                    "count": { "type": "integer", "minimum": 1, "maximum": 10, "default": 5 }
-                },
-                "required": ["query"]
-            }),
-            annotations: ToolAnnotations {
-                execution: ToolExecution::Sequential,
-                mutating: false,
-                timeout: Some(std::time::Duration::from_secs(20)),
-            },
-        }
-    }
-
-    fn call(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
-        let provider = self.provider.clone();
-        Box::pin(async move {
-            let args = parse_args::<WebSearchArgs>(invocation.arguments)?;
-            let count = args.count.unwrap_or(5).min(10);
-
-            let Some(ref provider) = provider else {
-                return Ok(ToolOutput::new(json!({
-                    "error": "no search provider configured. Set BRAVE_SEARCH_API_KEY environment variable.",
-                    "items": [],
-                })));
-            };
-
-            match provider.search(&args.query, count).await {
-                Ok(result) => {
-                    let items: Vec<serde_json::Value> = result
-                        .items
-                        .into_iter()
-                        .map(|item| {
-                            json!({
-                                "title": item.title,
-                                "url": item.url,
-                                "snippet": item.snippet,
-                            })
-                        })
-                        .collect();
-                    Ok(ToolOutput::new(json!({
-                        "items": items,
-                        "total_estimate": result.total_estimate,
-                    })))
-                }
-                Err(e) => Ok(ToolOutput::new(json!({
-                    "error": e.to_string(),
-                    "items": [],
-                }))),
-            }
-        })
-    }
-}
-
-/// A tool that fetches a URL and returns its content as text.
-#[derive(Clone, Debug)]
-pub struct FetchUrlTool;
-
-impl Tool for FetchUrlTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: ToolName::new("fetch_url"),
-            description: "Fetch a URL and return its text content.".into(),
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": { "type": "string", "description": "The URL to fetch." },
-                    "max_bytes": { "type": "integer", "minimum": 1, "maximum": 200000, "default": 50000 }
-                },
-                "required": ["url"]
-            }),
-            annotations: ToolAnnotations {
-                execution: ToolExecution::Sequential,
-                mutating: false,
-                timeout: Some(std::time::Duration::from_secs(30)),
-            },
-        }
-    }
-
-    fn call(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
-        Box::pin(async move {
-            let args = parse_args::<FetchUrlArgs>(invocation.arguments)?;
-
-            // Basic URL validation
-            if !args.url.starts_with("http://") && !args.url.starts_with("https://") {
-                return Err(ToolError::InvalidArguments(
-                    "URL must start with http:// or https://".into(),
-                ));
-            }
-
-            let max_bytes = args.max_bytes.unwrap_or(50_000).min(200_000);
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(25))
-                .user_agent("Joker/0.1 (research agent)")
-                .build()
-                .map_err(|e| ToolError::Execution(format!("failed to create HTTP client: {e}")))?;
-
-            let response = client
-                .get(&args.url)
-                .send()
-                .await
-                .map_err(|e| ToolError::Execution(format!("request failed: {e}")))?;
-
-            let status = response.status();
-            let content_type = response
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_string();
-
-            let body = response
-                .bytes()
-                .await
-                .map_err(|e| ToolError::Execution(format!("read failed: {e}")))?;
-
-            let size = body.len();
-            let text = if content_type.contains("application/json") || content_type.contains("text/")
-            {
-                String::from_utf8_lossy(&body).to_string()
-            } else {
-                format!("[binary content: {size} bytes, content-type: {content_type}]")
-            };
-
-            let truncated = text.len() > max_bytes;
-            let content = if truncated {
-                truncate_at_char_boundary(&text, max_bytes).to_string()
-            } else {
-                text
-            };
-
-            Ok(ToolOutput::new(json!({
-                "url": args.url,
-                "status": status.as_u16(),
-                "content_type": content_type,
-                "size": size,
-                "content": content,
-                "truncated": truncated,
-            })))
-        })
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct WebSearchArgs {
-    query: String,
-    count: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FetchUrlArgs {
-    url: String,
-    max_bytes: Option<usize>,
-}
-
-// ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -1239,176 +928,5 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         assert!(!result.is_error);
         assert_eq!(result.output["content"], "hello");
-    }
-
-    #[tokio::test]
-    async fn grep_finds_matches() {
-        let root = std::env::temp_dir().join(format!("joker-tools-grep-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("a.txt"), "alpha\nbeta").unwrap();
-        let registry = readonly_tools(&root).unwrap();
-
-        let result = registry
-            .call(ToolInvocation {
-                call_id: "1".into(),
-                name: ToolName::new("grep"),
-                arguments: json!({"query":"beta"}),
-            })
-            .await;
-
-        let _ = fs::remove_dir_all(&root);
-        assert!(!result.is_error);
-        assert_eq!(result.output["matches"][0]["line"], 2);
-    }
-
-    #[tokio::test]
-    async fn write_file_creates_content() {
-        let root = std::env::temp_dir().join(format!("joker-tools-write-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let registry = writeable_tools(&root).unwrap();
-
-        let result = registry
-            .call(ToolInvocation {
-                call_id: "1".into(),
-                name: ToolName::new("write_file"),
-                arguments: json!({"path":"test.txt", "content":"hello world"}),
-            })
-            .await;
-
-        assert!(!result.is_error, "write failed: {:?}", result.output);
-        assert_eq!(result.output["size"], 11);
-
-        let content = fs::read_to_string(root.join("test.txt")).unwrap();
-        assert_eq!(content, "hello world");
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[tokio::test]
-    async fn edit_file_replaces_content() {
-        let root = std::env::temp_dir().join(format!("joker-tools-edit-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("edit.txt"), "hello world").unwrap();
-        let registry = writeable_tools(&root).unwrap();
-
-        let result = registry
-            .call(ToolInvocation {
-                call_id: "1".into(),
-                name: ToolName::new("edit_file"),
-                arguments: json!({"path":"edit.txt", "old_string":"world", "new_string":"there"}),
-            })
-            .await;
-
-        assert!(!result.is_error, "edit failed: {:?}", result.output);
-
-        let content = fs::read_to_string(root.join("edit.txt")).unwrap();
-        assert_eq!(content, "hello there");
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[tokio::test]
-    async fn edit_file_errors_if_old_string_missing() {
-        let root = std::env::temp_dir().join(format!("joker-tools-edit2-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("edit.txt"), "hello world").unwrap();
-        let registry = writeable_tools(&root).unwrap();
-
-        let result = registry
-            .call(ToolInvocation {
-                call_id: "1".into(),
-                name: ToolName::new("edit_file"),
-                arguments: json!({"path":"edit.txt", "old_string":"missing", "new_string":"there"}),
-            })
-            .await;
-
-        assert!(result.is_error);
-        assert!(result.output.as_str().unwrap().contains("not found"));
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[tokio::test]
-    async fn write_file_rejects_escape() {
-        let root = std::env::temp_dir().join(format!("joker-tools-escape-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let registry = writeable_tools(&root).unwrap();
-
-        let result = registry
-            .call(ToolInvocation {
-                call_id: "1".into(),
-                name: ToolName::new("write_file"),
-                arguments: json!({"path":"../../etc/passwd", "content":"evil"}),
-            })
-            .await;
-
-        assert!(result.is_error, "should reject path escape");
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[tokio::test]
-    async fn shell_executes_command() {
-        let root = std::env::temp_dir().join(format!("joker-tools-shell-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let registry = writeable_tools(&root).unwrap();
-
-        let result = registry
-            .call(ToolInvocation {
-                call_id: "1".into(),
-                name: ToolName::new("shell"),
-                arguments: json!({"command":"echo hello"}),
-            })
-            .await;
-
-        assert!(!result.is_error, "shell failed: {:?}", result.output);
-        assert!(result.output["stdout"].as_str().unwrap().contains("hello"));
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[tokio::test]
-    async fn apply_patch_modifies_file() {
-        let root =
-            std::env::temp_dir().join(format!("joker-tools-patch-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        fs::write(
-            root.join("example.rs"),
-            "fn hello() {\n    println!(\"old\");\n}\n",
-        )
-        .unwrap();
-        let registry = writeable_tools(&root).unwrap();
-
-        let patch = [
-            "@@ -1,3 +1,3 @@",
-            " fn hello() {",
-            "-    println!(\"old\");",
-            "+    println!(\"new\");",
-            " }",
-        ]
-        .join("\n");
-
-        let result = registry
-            .call(ToolInvocation {
-                call_id: "1".into(),
-                name: ToolName::new("apply_patch"),
-                arguments: json!({"path":"example.rs", "patch": patch}),
-            })
-            .await;
-
-        assert!(!result.is_error, "patch failed: {:?}", result.output);
-
-        let content = fs::read_to_string(root.join("example.rs")).unwrap();
-        assert!(content.contains("println!(\"new\")"));
-        assert!(!content.contains("println!(\"old\")"));
-
-        let _ = fs::remove_dir_all(&root);
     }
 }
