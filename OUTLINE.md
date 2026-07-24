@@ -4,7 +4,7 @@
 
 Joker 是一个内核精简、API 封装优先、强自定义化的 Rust 编码代理框架。它的核心目标不是先做一个功能堆满的终端产品，而是提供一套足够小、足够清晰、可组合的 agent kernel，让开发者可以通过 Rust API 或轻量配置自由组合：
 
-- 模型 Provider：Scripted、本地 OpenAI-compatible、DeepSeek、Anthropic、Google 等。
+- 模型 Provider：OpenAI-compatible、DeepSeek、Anthropic、Google 等。
 - 工具集合：`read`、`write`、`web_search`、`shell`、`grep`、`apply_patch`、MCP 工具等。
 - 工具权限：自动批准、调用时请求批准、拒绝、只读默认信任、会话级批准、项目级持久批准。
 - 上下文构建：原始对话、固定窗口、摘要压缩、项目上下文、规则/记忆注入。
