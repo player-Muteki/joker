@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::fmt;
+use std::collections::HashMap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use joker::SharedApprovalChannel;
 use joker_config::RuntimeConfig;
@@ -23,6 +24,8 @@ pub struct App {
     pub approval_channel: Option<SharedApprovalChannel>,
     pub session_store: Option<Arc<dyn joker::SessionStore>>,
     pub compact_requested: bool,
+    pub credential_store: HashMap<String, String>,
+    pub api_key_input: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -46,6 +49,7 @@ impl Dialog {
 pub enum DialogKind {
     Provider,
     Model,
+    ApiKeyInput { provider_id: String },
 }
 
 impl fmt::Debug for App {
@@ -63,6 +67,8 @@ impl fmt::Debug for App {
             .field("approval_channel", &self.approval_channel)
             .field("session_store", &self.session_store.as_ref().map(|_| "SessionStore"))
             .field("compact_requested", &self.compact_requested)
+            .field("credential_store", &self.credential_store.keys().collect::<Vec<_>>())
+            .field("api_key_input", &self.api_key_input.as_ref().map(|(p, _)| p.as_str()))
             .finish()
     }
 }
@@ -90,10 +96,35 @@ impl App {
             approval_channel: None,
             session_store: None,
             compact_requested: false,
+            credential_store: HashMap::new(),
+            api_key_input: None,
         }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<AppAction> {
+        // API key input mode: keys go to the input buffer
+        if let Some((ref _provider_id, ref mut buffer)) = self.api_key_input {
+            return match key.code {
+                KeyCode::Enter => {
+                    let key_value = buffer.clone();
+                    let provider = self.api_key_input.take().unwrap().0;
+                    Some(AppAction::ApiKeyConfirm { provider_id: provider, api_key: key_value })
+                }
+                KeyCode::Esc => {
+                    self.api_key_input = None;
+                    Some(AppAction::Redraw)
+                }
+                KeyCode::Char(ch) => {
+                    buffer.push(ch);
+                    Some(AppAction::Redraw)
+                }
+                KeyCode::Backspace => {
+                    buffer.pop();
+                    Some(AppAction::Redraw)
+                }
+                _ => Some(AppAction::Redraw),
+            };
+        }
         if self.dialog.is_some() {
             let dialog = self.dialog.as_mut().unwrap();
             return match key.code {
@@ -389,6 +420,10 @@ pub enum AppAction {
     DialogConfirm {
         kind: DialogKind,
         selection: String,
+    },
+    ApiKeyConfirm {
+        provider_id: String,
+        api_key: String,
     },
 }
 

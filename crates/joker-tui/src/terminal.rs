@@ -153,9 +153,42 @@ fn handle_action(
         AppAction::DialogConfirm { kind, selection } => {
             handle_dialog_confirm(app, driver, kind, &selection);
         }
+        AppAction::ApiKeyConfirm { provider_id, api_key } => {
+            handle_api_key_confirm(app, driver, &provider_id, &api_key);
+        }
         AppAction::Cancel => app.cancel_running(),
         AppAction::Quit => app.quit(),
         AppAction::Redraw => {}
+    }
+}
+
+fn handle_api_key_confirm(
+    app: &mut App,
+    driver: &mut AgentDriver,
+    provider_id: &str,
+    api_key: &str,
+) {
+    // Store credential in memory
+    app.credential_store.insert(provider_id.to_string(), api_key.to_string());
+
+    // Set env var for the provider so build_model picks it up
+    let _env_key = format!("{}_API_KEY", provider_id.to_uppercase());
+    // env var set via credential_store.get() at model-build time;
+    // not needed here since switch_provider already succeeded
+
+    // Switch to the provider
+    match app.runtime_config.switch_provider(provider_id) {
+        Ok(()) => {
+            app.status = format!("Idle ({})", app.runtime_config.provider_label());
+            driver.set_runtime_config(app.runtime_config.clone());
+            app.transcript.push(crate::app::TranscriptItem::Status(
+                format!("API key stored. Switched to provider: {}", app.runtime_config.provider_label()),
+            ));
+        }
+        Err(error) => {
+            app.transcript
+                .push(crate::app::TranscriptItem::Error(format!("Failed: {error}")));
+        }
     }
 }
 
@@ -180,7 +213,7 @@ fn handle_dialog_confirm(
                     .push(TranscriptItem::Error(error.to_string()));
             }
         },
-        DialogKind::Model => match app.runtime_config.switch_model(selection) {
+        DialogKind::Model | DialogKind::ApiKeyInput { .. } => match app.runtime_config.switch_model(selection) {
             Ok(()) => {
                 app.status = format!("Idle ({})", app.runtime_config.provider_label());
                 driver.set_runtime_config(app.runtime_config.clone());

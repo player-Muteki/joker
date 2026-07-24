@@ -58,6 +58,25 @@ impl RuntimeConfig {
         Ok(())
     }
 
+    pub fn needs_api_key(&self) -> Option<String> {
+        match &self.provider {
+            ProviderSelection::Scripted { .. } => None,
+            ProviderSelection::OpenAiCompatible(config) => {
+                if config.require_api_key && config.api_key.is_none() && config.api_key_env.is_some() {
+                    Some(config.api_key_env.as_deref().unwrap_or("API_KEY").to_string())
+                } else {
+                    None
+                }
+            }
+            ProviderSelection::Anthropic { api_key, .. } => {
+                if api_key.is_none() { Some("ANTHROPIC_API_KEY".to_string()) } else { None }
+            }
+            ProviderSelection::Google { api_key, .. } => {
+                if api_key.is_none() { Some("GOOGLE_GENERATIVE_AI_API_KEY".to_string()) } else { None }
+            }
+        }
+    }
+
     pub fn switch_model(&mut self, model: impl Into<String>) -> Result<(), ConfigError> {
         match &mut self.provider {
             ProviderSelection::Scripted { model } => {

@@ -106,6 +106,11 @@ pub const COMMANDS: &[CommandInfo] = &[
         description: "View, edit, or save configuration.",
     },
     CommandInfo {
+        name: "credentials",
+        usage: "/credentials",
+        description: "List stored API key credentials.",
+    },
+    CommandInfo {
         name: "tools",
         usage: "/tools",
         description: "List enabled tools.",
@@ -152,6 +157,7 @@ pub fn execute(input: &str, app: &mut App, config_store: &ConfigStore) -> Comman
         "models" => models(app),
         "config" => config(app, config_store, args),
         "tools" => tools(app),
+        "credentials" => credentials(app),
         "approve" => approve(app, args),
         "deny" => deny(app, args),
         "sessions" => sessions(app),
@@ -503,6 +509,21 @@ fn compact(app: &mut App) -> CommandResult {
         "Context compaction requested. SummaryContextBuilder will activate on next run.".into(),
     ));
     CommandResult::message("Compact request sent. The next agent run will use summary-based context.")
+}
+
+
+fn credentials(app: &App) -> CommandResult {
+    if app.credential_store.is_empty() {
+        return CommandResult::message("No API key credentials stored. Use /provider to add one.");
+    }
+    let lines: Vec<String> = app
+        .credential_store
+        .iter()
+        .map(|(provider, _key)| {
+            format!("  {}: **** ({})", provider, "stored in memory")
+        })
+        .collect();
+    CommandResult::message(format!("Credentials ({}):\n{}", lines.len(), lines.join("\n")))
 }
 
 fn unknown(name: &str) -> CommandResult {

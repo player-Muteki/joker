@@ -8,6 +8,7 @@ mod event;
 mod model;
 mod policy;
 mod protocol;
+mod credential;
 mod session;
 mod tool;
 mod web_search;
@@ -39,6 +40,7 @@ pub use tool::{
     ToolInvocation, ToolName, ToolOutput, ToolRegistry,
 };
 pub use web_search::{SearchFuture, SearchResult, WebSearch, WebSearchError};
+pub use credential::{CredentialError, CredentialStore};
 pub use session::{
     JsonlSessionStore, SessionData, SessionError, SessionFuture, SessionInfo, SessionLoadFuture,
     SessionListFuture, SessionStore,
