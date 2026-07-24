@@ -15,6 +15,30 @@ pub struct App {
     pub scroll: u16,
     pub cancellation_token: Option<CancellationToken>,
     pub runtime_config: RuntimeConfig,
+    pub dialog: Option<Dialog>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Dialog {
+    pub kind: DialogKind,
+    pub title: String,
+    pub options: Vec<(String, String)>,
+    pub selected: usize,
+}
+
+impl Dialog {
+    pub fn selected_value(&self) -> String {
+        self.options
+            .get(self.selected)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DialogKind {
+    Provider,
+    Model,
 }
 
 impl App {
@@ -36,10 +60,37 @@ impl App {
             scroll: 0,
             cancellation_token: None,
             runtime_config,
+            dialog: None,
         }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<AppAction> {
+        if self.dialog.is_some() {
+            let dialog = self.dialog.as_mut().unwrap();
+            return match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    dialog.selected = dialog.selected.saturating_sub(1);
+                    Some(AppAction::Redraw)
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if dialog.selected + 1 < dialog.options.len() {
+                        dialog.selected += 1;
+                    }
+                    Some(AppAction::Redraw)
+                }
+                KeyCode::Enter => {
+                    let kind = dialog.kind.clone();
+                    let selection = dialog.selected_value();
+                    self.dialog = None;
+                    Some(AppAction::DialogConfirm { kind, selection })
+                }
+                KeyCode::Esc => {
+                    self.dialog = None;
+                    Some(AppAction::Redraw)
+                }
+                _ => None,
+            };
+        }
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.running {
@@ -248,6 +299,10 @@ pub enum AppAction {
     Cancel,
     Quit,
     Redraw,
+    DialogConfirm {
+        kind: DialogKind,
+        selection: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

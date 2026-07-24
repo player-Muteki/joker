@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     TuiError,
-    app::{App, AppAction},
+    app::{App, AppAction, DialogKind, TranscriptItem},
     commands::{self, CommandAction},
     driver::AgentDriver,
     event::UiEvent,
@@ -143,16 +143,61 @@ fn handle_action(
                 handle_command_action(app, driver, action);
             }
         }
+        AppAction::DialogConfirm { kind, selection } => {
+            handle_dialog_confirm(app, driver, kind, &selection);
+        }
         AppAction::Cancel => app.cancel_running(),
         AppAction::Quit => app.quit(),
         AppAction::Redraw => {}
     }
 }
 
+fn handle_dialog_confirm(
+    app: &mut App,
+    driver: &mut AgentDriver,
+    kind: DialogKind,
+    selection: &str,
+) {
+    match kind {
+        DialogKind::Provider => match app.runtime_config.switch_provider(selection) {
+            Ok(()) => {
+                app.status = format!("Idle ({})", app.runtime_config.provider_label());
+                driver.set_runtime_config(app.runtime_config.clone());
+                app.transcript.push(TranscriptItem::Status(format!(
+                    "Switched provider to {}",
+                    app.runtime_config.provider_label()
+                )));
+            }
+            Err(error) => {
+                app.transcript
+                    .push(TranscriptItem::Error(error.to_string()));
+            }
+        },
+        DialogKind::Model => match app.runtime_config.switch_model(selection) {
+            Ok(()) => {
+                app.status = format!("Idle ({})", app.runtime_config.provider_label());
+                driver.set_runtime_config(app.runtime_config.clone());
+                app.transcript.push(TranscriptItem::Status(format!(
+                    "Switched model to {}",
+                    app.runtime_config.provider_label()
+                )));
+            }
+            Err(error) => {
+                app.transcript
+                    .push(TranscriptItem::Error(error.to_string()));
+            }
+        },
+    }
+}
+
 fn handle_command_action(app: &mut App, driver: &mut AgentDriver, action: CommandAction) {
     match action {
         CommandAction::Cancel => app.cancel_running(),
-        CommandAction::Clear => app.transcript.clear(),
+        CommandAction::Clear => {
+            app.transcript.clear();
+            app.transcript
+                .push(TranscriptItem::Status("Transcript cleared.".into()));
+        }
         CommandAction::ConfigChanged => {
             app.status = format!("Idle ({})", app.runtime_config.provider_label());
             driver.set_runtime_config(app.runtime_config.clone());

@@ -777,14 +777,14 @@ dependencies = [
 name = "joker-config"
 version = "0.0.1"
 dependencies = [
- "joker-provider-openai",
+ "joker-provider",
  "serde",
  "thiserror",
  "toml",
 ]
 
 [[package]]
-name = "joker-provider-openai"
+name = "joker-provider"
 version = "0.0.1"
 dependencies = [
  "futures-core",
@@ -795,6 +795,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -817,7 +818,7 @@ dependencies = [
  "futures-util",
  "joker",
  "joker-config",
- "joker-provider-openai",
+ "joker-provider",
  "joker-tools",
  "ratatui",
  "serde_json",

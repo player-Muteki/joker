@@ -7,7 +7,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use joker_provider_openai::{DEEPSEEK, OpenAiCompatibleConfig};
+use joker_provider::{
+    ALIBABA, ANTHROPIC, BAIDU, DEEPSEEK, GOOGLE, MOONSHOT, ZHIPUAI, OpenAiCompatibleConfig,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -30,12 +32,24 @@ impl Default for RuntimeConfig {
 
 impl RuntimeConfig {
     #[must_use]
+    pub fn current_model(&self) -> String {
+        match &self.provider {
+            ProviderSelection::Scripted { model } => model.clone(),
+            ProviderSelection::OpenAiCompatible(config) => config.model.clone(),
+            ProviderSelection::Anthropic { model, .. } => model.clone(),
+            ProviderSelection::Google { model, .. } => model.clone(),
+        }
+    }
+
+    #[must_use]
     pub fn provider_label(&self) -> String {
         match &self.provider {
             ProviderSelection::Scripted { .. } => "scripted".into(),
             ProviderSelection::OpenAiCompatible(config) => {
                 format!("{}/{}", config.provider_name, config.model)
             }
+            ProviderSelection::Anthropic { model, .. } => format!("anthropic/{model}"),
+            ProviderSelection::Google { model, .. } => format!("google/{model}"),
         }
     }
 
@@ -58,6 +72,22 @@ impl RuntimeConfig {
                 config.model = model;
                 Ok(())
             }
+            ProviderSelection::Anthropic { model: m, .. } => {
+                let model = model.into();
+                if model.trim().is_empty() {
+                    return Err(ConfigError::InvalidValue("model cannot be empty".into()));
+                }
+                *m = model;
+                Ok(())
+            }
+            ProviderSelection::Google { model: m, .. } => {
+                let model = model.into();
+                if model.trim().is_empty() {
+                    return Err(ConfigError::InvalidValue("model cannot be empty".into()));
+                }
+                *m = model;
+                Ok(())
+            }
         }
     }
 
@@ -65,16 +95,17 @@ impl RuntimeConfig {
     pub fn available_models(&self) -> Vec<String> {
         match &self.provider {
             ProviderSelection::Scripted { model } => vec![model.clone()],
-            ProviderSelection::OpenAiCompatible(config)
-                if config.provider_name.eq_ignore_ascii_case(DEEPSEEK.id) =>
-            {
-                DEEPSEEK
-                    .models
-                    .iter()
-                    .map(|model| (*model).into())
-                    .collect()
+            ProviderSelection::OpenAiCompatible(config) => known_model_list(&config.provider_name)
+                .unwrap_or(&[&config.model])
+                .iter()
+                .map(|m| (*m).into())
+                .collect(),
+            ProviderSelection::Anthropic { .. } => {
+                ANTHROPIC.models.iter().map(|m| (*m).into()).collect()
             }
-            ProviderSelection::OpenAiCompatible(config) => vec![config.model.clone()],
+            ProviderSelection::Google { .. } => {
+                GOOGLE.models.iter().map(|m| (*m).into()).collect()
+            }
         }
     }
 
@@ -84,14 +115,18 @@ impl RuntimeConfig {
             provider: Some(match &self.provider {
                 ProviderSelection::Scripted { .. } => "scripted".into(),
                 ProviderSelection::OpenAiCompatible(config) => config.provider_name.clone(),
+                ProviderSelection::Anthropic { .. } => "anthropic".into(),
+                ProviderSelection::Google { .. } => "google".into(),
             }),
             model: Some(match &self.provider {
                 ProviderSelection::Scripted { model } => model.clone(),
                 ProviderSelection::OpenAiCompatible(config) => config.model.clone(),
+                ProviderSelection::Anthropic { model, .. } => model.clone(),
+                ProviderSelection::Google { model, .. } => model.clone(),
             }),
             base_url: match &self.provider {
                 ProviderSelection::OpenAiCompatible(config)
-                    if !config.provider_name.eq_ignore_ascii_case(DEEPSEEK.id) =>
+                    if !is_known_preset(&config.provider_name) =>
                 {
                     Some(config.base_url.clone())
                 }
@@ -99,7 +134,7 @@ impl RuntimeConfig {
             },
             api_key_env: match &self.provider {
                 ProviderSelection::OpenAiCompatible(config)
-                    if !config.provider_name.eq_ignore_ascii_case(DEEPSEEK.id) =>
+                    if !is_known_preset(&config.provider_name) =>
                 {
                     config.api_key_env.clone()
                 }
@@ -116,6 +151,14 @@ impl RuntimeConfig {
 pub enum ProviderSelection {
     Scripted { model: String },
     OpenAiCompatible(OpenAiCompatibleConfig),
+    Anthropic {
+        model: String,
+        api_key: Option<String>,
+    },
+    Google {
+        model: String,
+        api_key: Option<String>,
+    },
 }
 
 impl ProviderSelection {
@@ -136,6 +179,7 @@ impl ProviderSelection {
                 api_key: std::env::var(DEEPSEEK.api_key_env).ok(),
                 api_key_env: Some(DEEPSEEK.api_key_env.into()),
                 require_api_key: true,
+                extra_body: None,
             })),
             "openai-compatible" | "custom" => Ok(Self::OpenAiCompatible(OpenAiCompatibleConfig {
                 provider_name: "openai-compatible".into(),
@@ -144,9 +188,34 @@ impl ProviderSelection {
                 api_key: std::env::var("OPENAI_COMPATIBLE_API_KEY").ok(),
                 api_key_env: Some("OPENAI_COMPATIBLE_API_KEY".into()),
                 require_api_key: false,
+                extra_body: None,
             })),
+            "anthropic" => Ok(Self::Anthropic {
+                model: ANTHROPIC.default_model.into(),
+                api_key: std::env::var(ANTHROPIC.api_key_env).ok(),
+            }),
+            "google" => Ok(Self::Google {
+                model: GOOGLE.default_model.into(),
+                api_key: std::env::var(GOOGLE.api_key_env).ok(),
+            }),
+            "alibaba" | "dashscope" => Self::openai_preset(ALIBABA),
+            "zhipuai" | "glm" => Self::openai_preset(ZHIPUAI),
+            "moonshot" | "kimi" => Self::openai_preset(MOONSHOT),
+            "baidu" | "ernie" => Self::openai_preset(BAIDU),
             other => Err(ConfigError::UnknownProvider(other.into())),
         }
+    }
+
+    fn openai_preset(desc: joker_provider::ProviderDescriptor) -> Result<Self, ConfigError> {
+        Ok(Self::OpenAiCompatible(OpenAiCompatibleConfig {
+            provider_name: desc.id.into(),
+            base_url: desc.base_url.into(),
+            model: desc.default_model.into(),
+            api_key: std::env::var(desc.api_key_env).ok(),
+            api_key_env: Some(desc.api_key_env.into()),
+            require_api_key: true,
+            extra_body: None,
+        }))
     }
 }
 
@@ -268,10 +337,31 @@ fn provider_from_file(provider: &str, file: &FileConfig) -> Result<ProviderSelec
                 api_key: std::env::var(&api_key_env).ok(),
                 api_key_env: Some(api_key_env),
                 require_api_key: false,
+                extra_body: None,
             },
         ));
     }
     ProviderSelection::preset(provider)
+}
+
+/// Check if a provider name is a built-in preset (not a custom endpoint).
+fn is_known_preset(name: &str) -> bool {
+    matches!(
+        name.to_lowercase().as_str(),
+        "deepseek" | "alibaba" | "zhipuai" | "moonshot" | "baidu"
+    )
+}
+
+/// Return the known model list for a well-known provider, or `None`.
+fn known_model_list(provider_name: &str) -> Option<&'static [&'static str]> {
+    match provider_name.to_lowercase().as_str() {
+        "deepseek" => Some(DEEPSEEK.models),
+        "alibaba" => Some(ALIBABA.models),
+        "zhipuai" => Some(ZHIPUAI.models),
+        "moonshot" => Some(MOONSHOT.models),
+        "baidu" => Some(BAIDU.models),
+        _ => None,
+    }
 }
 
 fn env_prefix(provider: &str) -> String {

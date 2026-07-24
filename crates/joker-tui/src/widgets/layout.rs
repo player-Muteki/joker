@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::widgets::{command_palette, composer, transcript};
+use crate::widgets::{command_palette, composer, selector, transcript};
 
 pub fn render(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
@@ -58,9 +58,15 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
 
     let footer_text = if app.running {
         "Esc/Ctrl-C cancel"
+    } else if app.dialog.is_some() {
+        "↑↓ navigate | Enter select | Esc cancel"
     } else {
         "Enter submit | Esc/Ctrl-C quit"
     };
     let footer = Paragraph::new(footer_text).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(footer, vertical[composer_index + 1]);
+
+    if let Some(ref dialog) = app.dialog {
+        selector::render(frame, &dialog.title, &dialog.options, dialog.selected);
+    }
 }

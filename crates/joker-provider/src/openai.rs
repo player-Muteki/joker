@@ -1,6 +1,3 @@
-#![forbid(unsafe_code)]
-#![deny(unreachable_pub)]
-
 use std::{
     collections::BTreeMap,
     pin::Pin,
@@ -14,10 +11,12 @@ use joker::{
     ModelStream, Role, StopReason, ToolCall, ToolDefinition, ToolResult, Usage,
 };
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::sync::mpsc;
+
+use crate::ProviderDescriptor;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenAiCompatibleConfig {
@@ -27,12 +26,55 @@ pub struct OpenAiCompatibleConfig {
     pub api_key: Option<String>,
     pub api_key_env: Option<String>,
     pub require_api_key: bool,
+    /// Additional JSON body fields merged into the request (e.g. `enable_thinking`, `top_p`).
+    pub extra_body: Option<serde_json::Value>,
 }
 
 impl OpenAiCompatibleConfig {
     #[must_use]
     pub fn chat_url(&self) -> String {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
+    }
+
+    /// Compute the effective extra body, merging provider-specific defaults with user overrides.
+    #[must_use]
+    pub fn effective_extra_body(&self) -> Option<Value> {
+        let mut defaults = match self.provider_name.to_lowercase().as_str() {
+            "alibaba" => provider_defaults_alibaba(&self.model),
+            "zhipuai" => provider_defaults_zhipuai(&self.model),
+            _ => None,
+        };
+
+        match (defaults.as_mut(), self.extra_body.as_ref()) {
+            (Some(d), Some(user)) => {
+                if let (Value::Object(d_map), Value::Object(u_map)) = (d, user) {
+                    for (k, v) in u_map {
+                        d_map.insert(k.clone(), v.clone());
+                    }
+                }
+                defaults
+            }
+            (None, Some(user)) => Some(user.clone()),
+            _ => defaults,
+        }
+    }
+}
+
+fn provider_defaults_alibaba(model: &str) -> Option<Value> {
+    let ml = model.to_lowercase();
+    if ml.contains("qwq") || ml.contains("kimi-k2") || ml.contains("deepseek-r1") {
+        Some(json!({"enable_thinking": true}))
+    } else {
+        None
+    }
+}
+
+fn provider_defaults_zhipuai(model: &str) -> Option<Value> {
+    let ml = model.to_lowercase();
+    if ml.contains("glm") {
+        Some(json!({"thinking": {"type": "enabled", "clear_thinking": false}}))
+    } else {
+        None
     }
 }
 
@@ -81,11 +123,16 @@ impl OpenAiCompatibleModel {
 
 impl Model for OpenAiCompatibleModel {
     fn stream(&self, request: ModelRequest) -> ModelFuture<'_> {
+        let config_model = self.config.model.clone();
+        let client = self.client.clone();
+        let url = self.config.chat_url();
+        let extra = self.config.effective_extra_body();
+        let provider_name = self.config.provider_name.clone();
+
         Box::pin(async move {
-            let body = chat_request_body(&self.config.model, &request);
-            let response = self
-                .client
-                .post(self.config.chat_url())
+            let body = chat_request_body(&config_model, &request, extra.as_ref());
+            let response = client
+                .post(&url)
                 .json(&body)
                 .send()
                 .await
@@ -95,8 +142,7 @@ impl Model for OpenAiCompatibleModel {
                 let status = response.status();
                 let body = response.text().await.unwrap_or_default();
                 return Err(ModelError::Stream(format!(
-                    "{} request failed with {status}: {body}",
-                    self.config.provider_name
+                    "{provider_name} request failed with {status}: {body}"
                 )));
             }
 
@@ -295,13 +341,25 @@ fn map_finish_reason(reason: &str) -> StopReason {
     }
 }
 
-pub fn chat_request_body(model: &str, request: &ModelRequest) -> Value {
-    json!({
+pub fn chat_request_body(model: &str, request: &ModelRequest, extra_body: Option<&Value>) -> Value {
+    let mut body = json!({
         "model": model,
         "stream": true,
         "messages": request.messages.iter().map(openai_message).collect::<Vec<_>>(),
         "tools": request.tools.iter().map(openai_tool).collect::<Vec<_>>(),
-    })
+    });
+
+    if let Some(extra) = extra_body {
+        if let Value::Object(extra_map) = extra {
+            if let Value::Object(ref mut body_map) = body {
+                for (k, v) in extra_map {
+                    body_map.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+
+    body
 }
 
 fn openai_message(message: &Message) -> Value {
@@ -408,16 +466,6 @@ struct ChatFunctionDelta {
     arguments: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct ProviderDescriptor {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub base_url: &'static str,
-    pub api_key_env: &'static str,
-    pub default_model: &'static str,
-    pub models: &'static [&'static str],
-}
-
 pub const DEEPSEEK: ProviderDescriptor = ProviderDescriptor {
     id: "deepseek",
     name: "DeepSeek",
@@ -426,6 +474,134 @@ pub const DEEPSEEK: ProviderDescriptor = ProviderDescriptor {
     default_model: "deepseek-v4-flash",
     models: &["deepseek-v4-flash", "deepseek-v4-pro"],
 };
+
+pub const ALIBABA: ProviderDescriptor = ProviderDescriptor {
+    id: "alibaba",
+    name: "Alibaba Cloud (DashScope)",
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    api_key_env: "DASHSCOPE_API_KEY",
+    default_model: "qwen-plus",
+    models: &[
+        "qwen-plus",
+        "qwen-max",
+        "qwen-turbo",
+        "qwen3-235b-a22b",
+        "qwq-plus",
+        "deepseek-r1",
+        "kimi-k2.5",
+    ],
+};
+
+pub const ZHIPUAI: ProviderDescriptor = ProviderDescriptor {
+    id: "zhipuai",
+    name: "ZhipuAI (GLM)",
+    base_url: "https://open.bigmodel.cn/api/paas/v4",
+    api_key_env: "ZHIPUAI_API_KEY",
+    default_model: "glm-4-plus",
+    models: &[
+        "glm-4-plus",
+        "glm-4-0520",
+        "glm-4-air",
+        "glm-4-flash",
+        "glm-4v-plus",
+    ],
+};
+
+pub const MOONSHOT: ProviderDescriptor = ProviderDescriptor {
+    id: "moonshot",
+    name: "Moonshot AI (Kimi)",
+    base_url: "https://api.moonshot.cn/v1",
+    api_key_env: "MOONSHOT_API_KEY",
+    default_model: "kimi-k2.5",
+    models: &[
+        "kimi-k2.5",
+        "kimi-k2",
+        "kimi-k2-thinking",
+        "moonshot-v1-8k",
+        "moonshot-v1-32k",
+    ],
+};
+
+pub const BAIDU: ProviderDescriptor = ProviderDescriptor {
+    id: "baidu",
+    name: "Baidu (ERNIE)",
+    base_url: "https://aip.baidubce.com/rpc/2.0/ai/custom/v1/wenxinworkspace/chat",
+    api_key_env: "BAIDU_API_KEY",
+    default_model: "ernie-4.0",
+    models: &[
+        "ernie-4.0",
+        "ernie-3.5",
+        "ernie-speed",
+        "ernie-lite",
+    ],
+};
+
+/// Build an `OpenAiCompatibleConfig` for Alibaba DashScope with `enable_thinking` for reasoning models.
+pub fn alibaba_config(api_key: String, model: String) -> OpenAiCompatibleConfig {
+    let model_lower = model.to_lowercase();
+    let extra_body = if model_lower.contains("qwq")
+        || model_lower.contains("kimi-k2")
+        || model_lower.contains("deepseek-r1")
+    {
+        Some(json!({"enable_thinking": true}))
+    } else {
+        None
+    };
+    OpenAiCompatibleConfig {
+        provider_name: "alibaba".into(),
+        base_url: ALIBABA.base_url.into(),
+        model,
+        api_key: Some(api_key),
+        api_key_env: Some(ALIBABA.api_key_env.into()),
+        require_api_key: true,
+        extra_body,
+    }
+}
+
+/// Build an `OpenAiCompatibleConfig` for ZhipuAI GLM with thinking enabled.
+pub fn zhipuai_config(api_key: String, model: String) -> OpenAiCompatibleConfig {
+    let model_lower = model.to_lowercase();
+    let extra_body = if model_lower.contains("glm") {
+        Some(json!({"thinking": {"type": "enabled", "clear_thinking": false}}))
+    } else {
+        None
+    };
+    OpenAiCompatibleConfig {
+        provider_name: "zhipuai".into(),
+        base_url: ZHIPUAI.base_url.into(),
+        model,
+        api_key: Some(api_key),
+        api_key_env: Some(ZHIPUAI.api_key_env.into()),
+        require_api_key: true,
+        extra_body,
+    }
+}
+
+/// Build an `OpenAiCompatibleConfig` for Moonshot AI (Kimi).
+pub fn moonshot_config(api_key: String, model: String) -> OpenAiCompatibleConfig {
+    OpenAiCompatibleConfig {
+        provider_name: "moonshot".into(),
+        base_url: MOONSHOT.base_url.into(),
+        model,
+        api_key: Some(api_key),
+        api_key_env: Some(MOONSHOT.api_key_env.into()),
+        require_api_key: true,
+        extra_body: None,
+    }
+}
+
+/// Build an `OpenAiCompatibleConfig` for Baidu ERNIE.
+pub fn baidu_config(api_key: String, model: String) -> OpenAiCompatibleConfig {
+    OpenAiCompatibleConfig {
+        provider_name: "baidu".into(),
+        base_url: BAIDU.base_url.into(),
+        model,
+        api_key: Some(api_key),
+        api_key_env: Some(BAIDU.api_key_env.into()),
+        require_api_key: true,
+        extra_body: None,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -444,7 +620,7 @@ mod tests {
             }],
         };
 
-        let body = chat_request_body("deepseek-v4-flash", &request);
+        let body = chat_request_body("deepseek-v4-flash", &request, None);
 
         assert_eq!(body["model"], "deepseek-v4-flash");
         assert_eq!(body["stream"], true);
@@ -512,6 +688,7 @@ mod tests {
             api_key: None,
             api_key_env: Some("DEEPSEEK_API_KEY".into()),
             require_api_key: true,
+            extra_body: None,
         })
         .unwrap_err();
 
@@ -527,6 +704,7 @@ mod tests {
             api_key: None,
             api_key_env: None,
             require_api_key: false,
+            extra_body: None,
         });
 
         assert!(model.is_ok());

@@ -6,7 +6,8 @@ use joker::{
     ToolName, ToolOutput,
 };
 use joker_config::{ProviderSelection, RuntimeConfig};
-use joker_provider_openai::OpenAiCompatibleModel;
+use joker_provider::{anthropic, google};
+use joker_provider::OpenAiCompatibleModel;
 use joker_tools::readonly_tool_registry;
 use serde_json::json;
 use tokio::task::JoinHandle;
@@ -102,6 +103,32 @@ impl AgentDriver {
                     .map_err(|error| TuiError::Agent(error.to_string()))?,
             )
                 as Arc<dyn joker::Model>),
+            ProviderSelection::Anthropic { model, api_key } => {
+                let key = api_key.clone().unwrap_or_default();
+                let cfg = anthropic::AnthropicConfig {
+                    base_url: anthropic::DEFAULT_BASE_URL.into(),
+                    model: model.clone(),
+                    api_key: key,
+                };
+                Ok(Arc::new(
+                    anthropic::AnthropicModel::new(cfg)
+                        .map_err(|e| TuiError::Agent(e.to_string()))?,
+                )
+                    as Arc<dyn joker::Model>)
+            }
+            ProviderSelection::Google { model, api_key } => {
+                let key = api_key.clone().unwrap_or_default();
+                let cfg = google::GoogleConfig {
+                    base_url: google::DEFAULT_BASE_URL.into(),
+                    model: model.clone(),
+                    api_key: key,
+                };
+                Ok(Arc::new(
+                    google::GoogleModel::new(cfg)
+                        .map_err(|e| TuiError::Agent(e.to_string()))?,
+                )
+                    as Arc<dyn joker::Model>)
+            }
         }
     }
 

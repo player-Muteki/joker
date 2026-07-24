@@ -2,7 +2,7 @@
 members = [
     "crates/joker",
     "crates/joker-config",
-    "crates/joker-provider-openai",
+    "crates/joker-provider",
     "crates/joker-tools",
     "crates/joker-tui",
 ]

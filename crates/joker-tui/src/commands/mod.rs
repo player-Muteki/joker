@@ -1,6 +1,7 @@
 use joker_config::{ConfigStore, ProviderSelection};
+use joker_provider::{ALIBABA, ANTHROPIC, BAIDU, DEEPSEEK, GOOGLE, MOONSHOT, ZHIPUAI};
 
-use crate::app::{App, TranscriptItem};
+use crate::app::{App, Dialog, DialogKind, TranscriptItem};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommandInfo {
@@ -86,13 +87,13 @@ pub const COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         name: "provider",
-        usage: "/provider [scripted|deepseek|openai-compatible]",
-        description: "View or switch the provider.",
+        usage: "/provider [name]",
+        description: "Select a provider interactively, or switch directly by name.",
     },
     CommandInfo {
         name: "model",
         usage: "/model [name]",
-        description: "View or switch the model.",
+        description: "Select a model interactively, or switch directly by name.",
     },
     CommandInfo {
         name: "models",
@@ -179,9 +180,11 @@ fn help(args: Option<&str>) -> CommandResult {
 
 fn status(app: &App, config_store: &ConfigStore) -> CommandResult {
     CommandResult::message(format!(
-        "Provider: {}\nRunning: {}\nConfig: {}",
+        "Provider: {}\nModel: {}\nRunning: {}\nTools: {}\nConfig: {}",
         app.runtime_config.provider_label(),
-        app.running,
+        app.runtime_config.current_model(),
+        if app.running { "yes" } else { "no" },
+        app.runtime_config.available_models().len(),
         config_store.path().display()
     ))
 }
@@ -193,10 +196,18 @@ fn provider(app: &mut App, args: Option<&str>) -> CommandResult {
         );
     }
     let Some(provider) = args else {
-        return CommandResult::message(format!(
-            "Current provider: {}\nAvailable: scripted, deepseek, openai-compatible",
-            app.runtime_config.provider_label()
-        ));
+        let options = available_providers_for_dialog();
+        app.dialog = Some(Dialog {
+            kind: DialogKind::Provider,
+            title: "Select Provider".into(),
+            options,
+            selected: 0,
+        });
+        return CommandResult {
+            message: None,
+            action: None,
+            is_error: false,
+        };
     };
     match app.runtime_config.switch_provider(provider) {
         Ok(()) => CommandResult::with_message_and_action(
@@ -217,11 +228,25 @@ fn model(app: &mut App, args: Option<&str>) -> CommandResult {
         );
     }
     let Some(model) = args else {
-        return CommandResult::message(format!(
-            "Current model: {}\nAvailable: {}",
-            app.runtime_config.provider_label(),
-            app.runtime_config.available_models().join(", ")
-        ));
+        let options = available_models_for_dialog(app);
+        if options.is_empty() {
+            return CommandResult {
+                message: Some("No models available for the current provider.".into()),
+                action: None,
+                is_error: false,
+            };
+        }
+        app.dialog = Some(Dialog {
+            kind: DialogKind::Model,
+            title: format!("Select Model ({})", app.runtime_config.provider_label()),
+            options,
+            selected: 0,
+        });
+        return CommandResult {
+            message: None,
+            action: None,
+            is_error: false,
+        };
     };
     match app.runtime_config.switch_model(model) {
         Ok(()) => CommandResult::with_message_and_action(
@@ -232,8 +257,50 @@ fn model(app: &mut App, args: Option<&str>) -> CommandResult {
     }
 }
 
+fn available_providers_for_dialog() -> Vec<(String, String)> {
+    let mut result: Vec<(String, String)> = Vec::new();
+
+    let providers: [(&str, &str); 8] = [
+        ("DeepSeek", DEEPSEEK.id),
+        ("Alibaba Cloud (DashScope)", ALIBABA.id),
+        ("ZhipuAI (GLM)", ZHIPUAI.id),
+        ("Moonshot (Kimi)", MOONSHOT.id),
+        ("Baidu (ERNIE)", BAIDU.id),
+        ("Anthropic", ANTHROPIC.id),
+        ("Google", GOOGLE.id),
+        ("Scripted (no AI)", "scripted"),
+    ];
+
+    for (label, id) in &providers {
+        result.push((label.to_string(), id.to_string()));
+    }
+
+    result
+}
+
+fn available_models_for_dialog(app: &App) -> Vec<(String, String)> {
+    app.runtime_config
+        .available_models()
+        .into_iter()
+        .map(|m| (m.clone(), m))
+        .collect()
+}
+
 fn models(app: &App) -> CommandResult {
-    CommandResult::message(app.runtime_config.available_models().join("\n"))
+    let current = app.runtime_config.current_model();
+    let lines: Vec<String> = app
+        .runtime_config
+        .available_models()
+        .iter()
+        .map(|m| {
+            if m == &current {
+                format!("* {m} (current)")
+            } else {
+                format!("  {m}")
+            }
+        })
+        .collect();
+    CommandResult::message(lines.join("\n"))
 }
 
 fn config(app: &mut App, config_store: &ConfigStore, args: Option<&str>) -> CommandResult {
@@ -295,7 +362,9 @@ fn config_set(app: &mut App, key: &str, value: &str) -> CommandResult {
                 provider.base_url = value.into();
                 Ok(())
             }
-            ProviderSelection::Scripted { .. } => Err(joker_config::ConfigError::InvalidValue(
+            ProviderSelection::Scripted { .. }
+            | ProviderSelection::Anthropic { .. }
+            | ProviderSelection::Google { .. } => Err(joker_config::ConfigError::InvalidValue(
                 "base_url only applies to OpenAI-compatible providers".into(),
             )),
         },
@@ -305,7 +374,9 @@ fn config_set(app: &mut App, key: &str, value: &str) -> CommandResult {
                 provider.api_key_env = Some(value.into());
                 Ok(())
             }
-            ProviderSelection::Scripted { .. } => Err(joker_config::ConfigError::InvalidValue(
+            ProviderSelection::Scripted { .. }
+            | ProviderSelection::Anthropic { .. }
+            | ProviderSelection::Google { .. } => Err(joker_config::ConfigError::InvalidValue(
                 "api_key_env only applies to OpenAI-compatible providers".into(),
             )),
         },
