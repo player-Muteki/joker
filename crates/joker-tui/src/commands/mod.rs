@@ -430,12 +430,21 @@ fn approve(app: &mut App, args: Option<&str>) -> CommandResult {
     if !app.running {
         return CommandResult::error("No run is active.");
     }
-    let request_id = args.unwrap_or("");
+    let Some(args) = args else {
+        return CommandResult::error("Usage: /approve <request_id> [--session]");
+    };
+    let mut parts = args.split_whitespace();
+    let request_id = parts.next().unwrap_or("").to_string();
     if request_id.is_empty() {
-        return CommandResult::error("Usage: /approve <request_id>");
+        return CommandResult::error("Usage: /approve <request_id> [--session]");
     }
-    app.approve_pending(request_id, false);
-    CommandResult::message(format!("Approved: {request_id}"))
+    let remember_for_session = parts.any(|p| p == "--session" || p == "-s");
+    app.approve_pending(&request_id, remember_for_session);
+    if remember_for_session {
+        CommandResult::message(format!("Approved: {request_id} (remember for session)"))
+    } else {
+        CommandResult::message(format!("Approved: {request_id}"))
+    }
 }
 
 fn deny(app: &mut App, args: Option<&str>) -> CommandResult {
@@ -462,16 +471,38 @@ fn sessions(app: &App) -> CommandResult {
     if app.running {
         return CommandResult::error("Cannot list sessions while a run is active.");
     }
-    // Session store not wired yet in this version
-    CommandResult::message("Session persistence not yet connected. Use /config save to save current config.")
+    if let Some(ref store) = app.session_store {
+        let store = store.clone();
+        let result = tokio::runtime::Handle::current()
+            .block_on(async move { store.list().await });
+        match result {
+            Ok(sessions) if sessions.is_empty() => {
+                return CommandResult::message("No saved sessions.");
+            }
+            Ok(sessions) => {
+                let lines: Vec<String> = sessions.iter().map(|s| {
+                    format!("  {} | {} | {} msgs | {}", s.id, s.label, s.message_count,
+                        format_timestamp(s.updated_at))
+                }).collect();
+                let mut output = format!("Sessions ({}):
+", sessions.len());
+                output.push_str(&lines.join("
+"));
+                CommandResult::message(output)
+            }
+            Err(_) => CommandResult::error("Failed to list sessions."),
+        }
+    } else {
+        CommandResult::message("No session store configured. Sessions are not persisted.")
+    }
 }
 
 fn compact(app: &mut App) -> CommandResult {
-    if !app.running {
-        return CommandResult::error("No run is active to compact.");
-    }
-    app.transcript.push(TranscriptItem::Status("Context compaction requested. Summary will be generated on next model call.".into()));
-    CommandResult::message("Compact request sent.")
+    app.compact_requested = true;
+    app.transcript.push(TranscriptItem::Status(
+        "Context compaction requested. SummaryContextBuilder will activate on next run.".into(),
+    ));
+    CommandResult::message("Compact request sent. The next agent run will use summary-based context.")
 }
 
 fn unknown(name: &str) -> CommandResult {
@@ -486,6 +517,22 @@ fn unknown(name: &str) -> CommandResult {
             "Unknown command: /{name}. Did you mean {}?",
             suggestions.join(", ")
         ))
+    }
+}
+
+fn format_timestamp(unix_secs: u64) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dur = std::time::Duration::from_secs(unix_secs);
+    let sys = UNIX_EPOCH + dur;
+    if let Ok(diff) = SystemTime::now().duration_since(sys) {
+        let mins = diff.as_secs() / 60;
+        let hours = mins / 60;
+        let days = hours / 24;
+        if days > 0 { format!("{days}d ago") }
+        else if hours > 0 { format!("{hours}h ago") }
+        else { format!("{mins}m ago") }
+    } else {
+        "just now".to_string()
     }
 }
 

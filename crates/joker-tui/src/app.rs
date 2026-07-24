@@ -1,3 +1,5 @@
+use std::sync::Arc;
+use std::fmt;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use joker::SharedApprovalChannel;
 use joker_config::RuntimeConfig;
@@ -5,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::event::UiEvent;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct App {
     pub composer: String,
     pub cursor: usize,
@@ -19,6 +21,8 @@ pub struct App {
     pub dialog: Option<Dialog>,
     /// Shared approval channel for the current run
     pub approval_channel: Option<SharedApprovalChannel>,
+    pub session_store: Option<Arc<dyn joker::SessionStore>>,
+    pub compact_requested: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -44,6 +48,25 @@ pub enum DialogKind {
     Model,
 }
 
+impl fmt::Debug for App {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("App")
+            .field("composer", &self.composer)
+            .field("cursor", &self.cursor)
+            .field("transcript", &self.transcript)
+            .field("running", &self.running)
+            .field("should_quit", &self.should_quit)
+            .field("status", &self.status)
+            .field("scroll", &self.scroll)
+            .field("runtime_config", &self.runtime_config)
+            .field("dialog", &self.dialog)
+            .field("approval_channel", &self.approval_channel)
+            .field("session_store", &self.session_store.as_ref().map(|_| "SessionStore"))
+            .field("compact_requested", &self.compact_requested)
+            .finish()
+    }
+}
+
 impl App {
     #[must_use]
     pub fn new() -> Self {
@@ -65,6 +88,8 @@ impl App {
             runtime_config,
             dialog: None,
             approval_channel: None,
+            session_store: None,
+            compact_requested: false,
         }
     }
 

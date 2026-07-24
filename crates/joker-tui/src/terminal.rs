@@ -41,6 +41,12 @@ pub async fn run_tui(options: TuiOptions) -> Result<(), TuiError> {
     let workspace = std::env::current_dir()?;
     let mut driver = AgentDriver::new(options.runtime_config, workspace);
 
+    // Set up session store in .joker/sessions/
+    let session_dir = std::env::current_dir().unwrap_or_default().join(".joker").join("sessions");
+    if let Ok(store) = joker::JsonlSessionStore::new(&session_dir) {
+        app.session_store = Some(std::sync::Arc::new(store));
+    }
+
     if let Some(prompt) = options.initial_prompt {
         app.composer = prompt;
         app.cursor = app.composer.len();
@@ -209,14 +215,20 @@ fn handle_command_action(app: &mut App, driver: &mut AgentDriver, action: Comman
 
 fn spawn_agent_run(
     app: &mut App,
-    driver: &AgentDriver,
+    driver: &mut AgentDriver,
     prompt: String,
     tx: mpsc::UnboundedSender<UiEvent>,
 ) {
     let cancellation_token = CancellationToken::new();
     app.cancellation_token = Some(cancellation_token.clone());
 
-    // Create a shared approval channel for UI ↔ agent communication
+    // Pass compact flag from app to driver, then reset
+    if app.compact_requested {
+        driver.set_compact_pending(true);
+        app.compact_requested = false;
+    }
+
+    // Create a shared approval channel for UI <-> agent communication
     let approval_channel = SharedApprovalChannel::new();
     app.approval_channel = Some(approval_channel.clone());
 

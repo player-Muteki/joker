@@ -4,7 +4,7 @@ use joker::{
     Agent, ModelResponseEvent, Observer, ObserverFuture, PermissionPolicy, PermissionRule,
     RunRequest, ScriptedModel, ScriptedStep, SharedApprovalChannel, StopReason,
     ToolAnnotations, ToolDefinition, ToolDecision, ToolFn, ToolFuture, ToolInvocation, ToolName,
-    ToolOutput, RulePattern,
+    ToolOutput, RulePattern, SummaryContextBuilder,
 };
 use joker_config::{ProviderSelection, RuntimeConfig};
 use joker_provider::{anthropic, google};
@@ -42,6 +42,7 @@ impl Observer for ChannelObserver {
 pub struct AgentDriver {
     runtime_config: RuntimeConfig,
     workspace: PathBuf,
+    compact_pending: bool,
 }
 
 impl AgentDriver {
@@ -50,6 +51,7 @@ impl AgentDriver {
         Self {
             runtime_config,
             workspace: workspace.into(),
+            compact_pending: false,
         }
     }
 
@@ -77,6 +79,9 @@ impl AgentDriver {
         }))
     }
 
+    pub fn set_compact_pending(&mut self, pending: bool) {
+        self.compact_pending = pending;
+    }
     fn build_agent(
         &self,
         tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
@@ -165,6 +170,17 @@ impl AgentDriver {
                 ),
             ]);
         agent = agent.with_policy(Arc::new(policy));
+
+        // Wrap context builder with SummaryContextBuilder when compact is pending
+        let context_builder: Arc<dyn joker::ContextBuilder> = if self.compact_pending {
+            Arc::new(SummaryContextBuilder::new(
+                20,
+                Box::new(joker::PassthroughContextBuilder),
+            ))
+        } else {
+            Arc::new(joker::PassthroughContextBuilder)
+        };
+        agent = agent.with_context_builder(context_builder);
 
         Ok(agent)
     }

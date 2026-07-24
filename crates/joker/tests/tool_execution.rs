@@ -173,3 +173,212 @@ async fn invalid_arguments_and_tool_failures_become_error_results() {
             .contains("invalid arguments")
     );
 }
+
+
+// ── PermissionPolicy + ApprovalChannel integration ────────────────────
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// A model that returns a tool call on first stream() call, then text on subsequent calls.
+struct ToolThenTextModel {
+    tool_name: String,
+    response_text: String,
+    call_count: AtomicUsize,
+}
+
+impl ToolThenTextModel {
+    fn new(tool_name: impl Into<String>, response_text: impl Into<String>) -> Self {
+        Self {
+            tool_name: tool_name.into(),
+            response_text: response_text.into(),
+            call_count: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl joker::Model for ToolThenTextModel {
+    fn stream(&self, _request: joker::ModelRequest) -> joker::ModelFuture<'_> {
+        let tool_name = self.tool_name.clone();
+        let response_text = self.response_text.clone();
+        let call = self.call_count.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            if call == 0 {
+                // First call: return tool call
+                let items: Vec<Result<_, _>> = vec![
+                    Ok(joker::ModelResponseEvent::ToolCall(joker::ToolCall {
+                        id: "tc-1".into(),
+                        name: tool_name,
+                        arguments: serde_json::json!({}),
+                    })),
+                    Ok(joker::ModelResponseEvent::Finished {
+                        stop_reason: joker::StopReason::ToolUse,
+                        usage: joker::Usage::default(),
+                    }),
+                ];
+                Ok(Box::new(futures_util::stream::iter(items)) as joker::ModelStream)
+            } else {
+                // Subsequent calls: return text
+                let items: Vec<Result<_, _>> = vec![
+                    Ok(joker::ModelResponseEvent::TextDelta(response_text)),
+                    Ok(joker::ModelResponseEvent::Finished {
+                        stop_reason: joker::StopReason::Stop,
+                        usage: joker::Usage::default(),
+                    }),
+                ];
+                Ok(Box::new(futures_util::stream::iter(items)) as joker::ModelStream)
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn permission_ask_pauses_for_approval_before_mutating_tool() {
+    let model = Arc::new(ToolThenTextModel::new("write_file", "File written."));
+
+    let mut registry = joker::ToolRegistry::new();
+    registry
+        .insert(joker::ToolFn::new(
+            joker::ToolDefinition {
+                name: joker::ToolName::new("write_file"),
+                description: "write a file".into(),
+                input_schema: serde_json::json!({}),
+                annotations: joker::ToolAnnotations {
+                    execution: joker::ToolExecution::Sequential,
+                    mutating: true,
+                    timeout: None,
+                },
+            },
+            |_invocation: joker::ToolInvocation| -> joker::ToolFuture<'static> {
+                Box::pin(async move {
+                    Ok(joker::ToolOutput::new(serde_json::json!({"ok": true})))
+                })
+            },
+        ))
+        .unwrap();
+
+    let policy = Arc::new(
+        joker::PermissionPolicy::new()
+            .with_default_for_mutating(joker::ToolDecision::Ask {
+                request_id: "write_file-0".into(),
+                reason: "mutating tool needs approval".into(),
+            }),
+    );
+
+    let approval_channel = joker::SharedApprovalChannel::new();
+    let channel_for_agent = approval_channel.clone();
+
+    let agent = joker::AgentBuilder::new(model)
+        .tools(Arc::new(registry))
+        .permissions(policy)
+        .approval_channel(channel_for_agent)
+        .build();
+
+    let run_handle = tokio::spawn(async move {
+        agent.run(joker::RunRequest::new("write a file")).await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Verify a pending approval request was submitted
+    let pending = approval_channel.pending_request();
+    assert!(pending.is_some(), "agent should have submitted an approval request");
+    let req = pending.unwrap();
+    assert_eq!(req.request_id, "ask-write_file");
+    assert_eq!(req.tool_name, "write_file");
+
+    // Respond with approval
+    approval_channel.respond(joker::ApprovalResponse::Approved {
+        remember_for_session: false,
+    });
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        run_handle,
+    )
+    .await
+    .expect("run should complete within timeout")
+    .expect("run should not panic");
+
+    assert!(outcome.is_ok(), "run should succeed after approval: {:?}", outcome);
+    let outcome = outcome.unwrap();
+    assert_eq!(outcome.stop_reason, joker::StopReason::Stop);
+}
+
+#[tokio::test]
+async fn permission_ask_is_deniable() {
+    let model = Arc::new(ToolThenTextModel::new("shell", "Skipped."));
+
+    let mut registry = joker::ToolRegistry::new();
+    registry
+        .insert(joker::ToolFn::new(
+            joker::ToolDefinition {
+                name: joker::ToolName::new("shell"),
+                description: "run a command".into(),
+                input_schema: serde_json::json!({}),
+                annotations: joker::ToolAnnotations {
+                    execution: joker::ToolExecution::Sequential,
+                    mutating: true,
+                    timeout: None,
+                },
+            },
+            |_invocation: joker::ToolInvocation| -> joker::ToolFuture<'static> {
+                Box::pin(async move {
+                    Ok(joker::ToolOutput::new(serde_json::json!({"done": true})))
+                })
+            },
+        ))
+        .unwrap();
+
+    let policy = Arc::new(
+        joker::PermissionPolicy::new()
+            .with_default_for_mutating(joker::ToolDecision::Ask {
+                request_id: "shell-ask".into(),
+                reason: "needs approval".into(),
+            }),
+    );
+
+    let approval_channel = joker::SharedApprovalChannel::new();
+    let chan = approval_channel.clone();
+
+    let agent = joker::AgentBuilder::new(model)
+        .tools(Arc::new(registry))
+        .permissions(policy)
+        .approval_channel(chan)
+        .build();
+
+    let run_handle = tokio::spawn(async move {
+        agent.run(joker::RunRequest::new("run a command")).await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let pending = approval_channel.pending_request();
+    assert!(pending.is_some(), "agent should have submitted an approval request");
+
+    // Deny the request
+    approval_channel.respond(joker::ApprovalResponse::Denied {
+        reason: "not now".into(),
+    });
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        run_handle,
+    )
+    .await
+    .expect("run should complete")
+    .expect("run should not panic");
+
+    assert!(outcome.is_ok(), "run should succeed even after denial");
+    let conversation = outcome.unwrap().conversation;
+    // There should be a tool result with is_error = true
+    let has_denied_tool = conversation.messages().iter().any(|msg| {
+        msg.content.iter().any(|c| {
+            if let joker::Content::ToolResult(result) = c {
+                result.is_error
+            } else {
+                false
+            }
+        })
+    });
+    assert!(has_denied_tool, "denied tool should produce an error result");
+}
