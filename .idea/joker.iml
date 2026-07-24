@@ -13,6 +13,7 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/joker/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/joker/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/joker/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/joker-provider/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
