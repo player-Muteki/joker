@@ -8,9 +8,11 @@ repository.workspace = true
 
 [dependencies]
 joker = { path = "../joker" }
+async-trait = "0.1"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+reqwest = { workspace = true, features = ["json"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
