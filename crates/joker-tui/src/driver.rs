@@ -1,10 +1,11 @@
 use std::{path::PathBuf, sync::Arc};
 
 use joker::{
-    Agent, ModelResponseEvent, Observer, ObserverFuture, PermissionPolicy, PermissionRule,
-    RunRequest, ScriptedModel, ScriptedStep, SharedApprovalChannel, StopReason,
-    ToolAnnotations, ToolDefinition, ToolDecision, ToolFn, ToolFuture, ToolInvocation, ToolName,
-    ToolOutput, RulePattern, SummaryContextBuilder,
+    Agent, AgentPermission, ModelResponseEvent, Observer, ObserverFuture, PermissionEngine,
+    PermissionPolicy, PermissionRule, PermissionSetting, RunRequest, ScriptedModel, ScriptedStep,
+    SharedApprovalChannel, StopReason, ToolAnnotations, ToolDefinition, ToolDecision, ToolFn,
+    ToolFuture, ToolInvocation, ToolName, ToolOutput, ToolPolicy, ToolPolicyRequest,
+    builtin_agent_profiles, PolicyFuture, RulePattern, SummaryContextBuilder,
 };
 use joker_config::{ProviderSelection, RuntimeConfig};
 use joker_provider::{anthropic, google};
@@ -43,20 +44,64 @@ pub struct AgentDriver {
     runtime_config: RuntimeConfig,
     workspace: PathBuf,
     compact_pending: bool,
+    permission_engine: PermissionEngine,
+    active_agent: String,
 }
 
 impl AgentDriver {
     #[must_use]
     pub fn new(runtime_config: RuntimeConfig, workspace: impl Into<PathBuf>) -> Self {
+        let workspace: PathBuf = workspace.into();
+        let agents_dir = workspace.join(".joker").join("agents");
+
+        let mut engine = PermissionEngine::new();
+        // Register built-in agent profiles (plan, build, yolo)
+        let builtins = builtin_agent_profiles(&agents_dir);
+        for profile in builtins {
+            engine.register(profile);
+        }
+        // Register custom agent profiles from config
+        for (name, agent_cfg) in &runtime_config.to_file_config().agent {
+            if !["plan", "build", "yolo"].contains(&name.as_str()) {
+                let permission = agent_permission_from_config(name, agent_cfg, &agents_dir);
+                engine.register(permission);
+            }
+        }
+
         Self {
             runtime_config,
-            workspace: workspace.into(),
+            workspace,
             compact_pending: false,
+            permission_engine: engine,
+            active_agent: "build".into(),
         }
     }
 
     pub fn set_runtime_config(&mut self, runtime_config: RuntimeConfig) {
         self.runtime_config = runtime_config;
+    }
+
+    #[must_use]
+    pub fn active_agent(&self) -> &str {
+        &self.active_agent
+    }
+
+    pub fn set_active_agent(&mut self, agent_name: String) {
+        self.active_agent = agent_name;
+    }
+
+    #[must_use]
+    pub fn permission_engine(&self) -> &PermissionEngine {
+        &self.permission_engine
+    }
+
+    #[must_use]
+    pub fn workspace(&self) -> &PathBuf {
+        &self.workspace
+    }
+
+    pub fn permission_engine_mut(&mut self) -> &mut PermissionEngine {
+        &mut self.permission_engine
     }
 
     pub fn spawn_run(
@@ -90,18 +135,19 @@ impl AgentDriver {
         let model = self.build_model()?;
         let mut agent = Agent::new(model)
             .with_observer(Arc::new(ChannelObserver::new(tx)))
-            .with_approval_channel(approval_channel);
+            .with_approval_channel(approval_channel.clone());
 
-        // Use all tools by default (read + write + network)
+        // Use permission engine to filter tools for the active agent
         let registry = all_tool_registry(&self.workspace)
             .map_err(|error| TuiError::Agent(error.to_string()))?;
-        agent = agent.with_tools(Arc::new(registry));
+        let filtered = self
+            .permission_engine
+            .materialize_tools(&self.active_agent, &registry);
+        agent = agent.with_tools(Arc::new(filtered));
 
-        // Set up permission policy: mutating tools ask for approval by default,
-        // but low-risk commands are auto-approved.
-        let policy = PermissionPolicy::new()
+        // Compose: safety policy (dangerous commands) → engine policy (agent permissions)
+        let safety_policy = PermissionPolicy::new()
             .with_rules(vec![
-                // ── Hard denials ──
                 PermissionRule::new(
                     RulePattern::CommandPrefix("rm -rf".into()),
                     ToolDecision::Deny {
@@ -114,62 +160,16 @@ impl AgentDriver {
                         reason: "sudo not allowed".into(),
                     },
                 ),
-                // ── Low-risk command auto-approvals ──
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("cargo".into()),
-                    ToolDecision::Allow,
-                ),
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("git".into()),
-                    ToolDecision::Allow,
-                ),
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("ls".into()),
-                    ToolDecision::Allow,
-                ),
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("cat".into()),
-                    ToolDecision::Allow,
-                ),
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("echo".into()),
-                    ToolDecision::Allow,
-                ),
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("pwd".into()),
-                    ToolDecision::Allow,
-                ),
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("mkdir".into()),
-                    ToolDecision::Allow,
-                ),
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("touch".into()),
-                    ToolDecision::Allow,
-                ),
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("head".into()),
-                    ToolDecision::Allow,
-                ),
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("tail".into()),
-                    ToolDecision::Allow,
-                ),
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("which".into()),
-                    ToolDecision::Allow,
-                ),
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("date".into()),
-                    ToolDecision::Allow,
-                ),
-                // ── docs/ path writes auto-allowed ──
-                PermissionRule::new(
-                    RulePattern::PathPrefix("docs/".into()),
-                    ToolDecision::Allow,
-                ),
             ]);
-        agent = agent.with_policy(Arc::new(policy));
+        let engine_policy = self.permission_engine.policy_for_with_channel(
+            self.active_agent.clone(),
+            approval_channel,
+        );
+        let policy = Arc::new(ChainPolicy {
+            first: Arc::new(safety_policy),
+            second: engine_policy,
+        });
+        agent = agent.with_policy(policy);
 
         // Wrap context builder with SummaryContextBuilder when compact is pending
         let context_builder: Arc<dyn joker::ContextBuilder> = if self.compact_pending {
@@ -246,6 +246,57 @@ fn streaming_text_events(text: &str) -> Vec<ModelResponseEvent> {
         usage: joker::Usage::default(),
     });
     events
+}
+
+/// Compose two `ToolPolicy` impls: first's Deny takes priority, then delegates to second.
+struct ChainPolicy {
+    first: Arc<dyn ToolPolicy>,
+    second: Arc<dyn ToolPolicy>,
+}
+
+impl ToolPolicy for ChainPolicy {
+    fn evaluate<'a>(&'a self, request: ToolPolicyRequest<'a>) -> PolicyFuture<'a> {
+        let request2 = request.clone();
+        Box::pin(async move {
+            let first_decision = self.first.evaluate(request).await?;
+            match first_decision {
+                ToolDecision::Deny { .. } => Ok(first_decision),
+                _ => self.second.evaluate(request2).await,
+            }
+        })
+    }
+}
+
+/// Convert an `AgentProfileConfig` from the config layer into an `AgentPermission`.
+fn agent_permission_from_config(
+    name: &str,
+    cfg: &joker_config::AgentProfileConfig,
+    agents_dir: &std::path::Path,
+) -> AgentPermission {
+    use std::collections::HashMap;
+    let mut perms = HashMap::new();
+    for (tool_name, tool_cfg) in &cfg.tools {
+        let setting = match tool_cfg.permission.as_deref() {
+            Some("auto-accept" | "auto_accept" | "auto") => PermissionSetting::AutoAccept,
+            Some("ask") => PermissionSetting::Ask,
+            Some("disabled" | "disable" | "deny" | "none") => PermissionSetting::Disabled,
+            _ => {
+                // If enabled is explicitly false, disable; otherwise default to Ask
+                if tool_cfg.enabled == Some(false) {
+                    PermissionSetting::Disabled
+                } else {
+                    PermissionSetting::Ask
+                }
+            }
+        };
+        perms.insert(ToolName::new(tool_name), setting);
+    }
+    AgentPermission {
+        agent_name: name.to_string(),
+        tool_permissions: perms,
+        constraint_file: agents_dir.join(format!("{name}_agent.md")),
+        hard_permission: None,
+    }
 }
 
 #[allow(dead_code)]

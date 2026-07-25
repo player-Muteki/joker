@@ -34,6 +34,7 @@ fn make_tool(
                 execution: ToolExecution::ParallelSafe,
                 mutating: false,
                 timeout: None,
+                ..ToolAnnotations::default()
             },
         },
         handler,
@@ -119,6 +120,7 @@ async fn tool_timeout_becomes_error_result() {
                     execution: ToolExecution::Sequential,
                     mutating: false,
                     timeout: Some(Duration::from_millis(1)),
+                    ..ToolAnnotations::default()
                 },
             },
             timeout_tool as fn(ToolInvocation) -> ToolFuture<'static>,
@@ -246,6 +248,7 @@ async fn permission_ask_pauses_for_approval_before_mutating_tool() {
                     execution: joker::ToolExecution::Sequential,
                     mutating: true,
                     timeout: None,
+                    ..joker::ToolAnnotations::default()
                 },
             },
             |_invocation: joker::ToolInvocation| -> joker::ToolFuture<'static> {
@@ -319,6 +322,7 @@ async fn permission_ask_is_deniable() {
                     execution: joker::ToolExecution::Sequential,
                     mutating: true,
                     timeout: None,
+                    ..joker::ToolAnnotations::default()
                 },
             },
             |_invocation: joker::ToolInvocation| -> joker::ToolFuture<'static> {

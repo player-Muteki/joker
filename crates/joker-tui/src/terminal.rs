@@ -159,6 +159,9 @@ fn handle_action(
         AppAction::Cancel => app.cancel_running(),
         AppAction::Quit => app.quit(),
         AppAction::Redraw => {}
+        AppAction::AgentCreate { name, tool_permissions } => {
+            handle_agent_create(app, driver, &name, &tool_permissions);
+        }
     }
 }
 
@@ -190,6 +193,42 @@ fn handle_api_key_confirm(
                 .push(crate::app::TranscriptItem::Error(format!("Failed: {error}")));
         }
     }
+}
+
+fn handle_agent_create(
+    app: &mut App,
+    driver: &mut AgentDriver,
+    name: &str,
+    tool_permissions: &[(String, String)],
+) {
+    use std::collections::HashMap;
+    use joker::{AgentPermission, PermissionSetting, ToolName};
+
+    let mut perms = HashMap::new();
+    for (label, tool_name) in tool_permissions {
+        let setting = if label.starts_with("[Auto]") {
+            PermissionSetting::AutoAccept
+        } else if label.starts_with("[Off]") {
+            PermissionSetting::Disabled
+        } else {
+            PermissionSetting::Ask
+        };
+        perms.insert(ToolName::new(tool_name), setting);
+    }
+
+    let agents_dir = driver.workspace().join(".joker").join("agents");
+    let agent_perm = AgentPermission {
+        agent_name: name.to_string(),
+        tool_permissions: perms,
+        constraint_file: agents_dir.join(format!("{name}_agent.md")),
+        hard_permission: None,
+    };
+
+    driver.permission_engine_mut().register(agent_perm);
+    app.agent_names.push(name.to_string());
+    app.transcript.push(TranscriptItem::Status(format!(
+        "Agent '{name}' created and registered."
+    )));
 }
 
 fn handle_dialog_confirm(
@@ -227,6 +266,16 @@ fn handle_dialog_confirm(
                     .push(TranscriptItem::Error(error.to_string()));
             }
         },
+        DialogKind::AgentSwitch => {
+            app.active_agent = selection.to_string();
+            driver.set_active_agent(selection.to_string());
+            app.transcript.push(TranscriptItem::Status(format!(
+                "Switched agent to: {selection}"
+            )));
+        }
+        DialogKind::AgentNew { .. } => {
+            // Handled internally by the wizard; shouldn't reach here
+        }
     }
 }
 

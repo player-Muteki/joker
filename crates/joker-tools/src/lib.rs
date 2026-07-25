@@ -9,15 +9,19 @@ use std::{
 };
 
 pub mod fetch_url;
+pub mod glob;
 pub mod memory;
+pub mod todo;
 pub mod web_search;
 
 use joker::{
-    Tool, ToolAnnotations, ToolDefinition, ToolError, ToolExecution, ToolFuture, ToolInvocation,
-    ToolName, ToolOutput, ToolRegistry,
+    ApprovalRequirement, Tool, ToolAnnotations, ToolCapability, ToolDefinition, ToolError,
+    ToolExecution, ToolFuture, ToolInvocation, ToolName, ToolOutput, ToolRegistry,
 };
 use fetch_url::FetchUrlTool;
+use glob::GlobTool;
 use joker::WebSearch;
+use todo::TodoWriteTool;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -41,7 +45,8 @@ pub fn readonly_tool_registry(workspace: impl Into<PathBuf>) -> Result<ToolRegis
     let mut registry = ToolRegistry::new();
     registry.insert(ListFilesTool::new(workspace.clone()))?;
     registry.insert(ReadFileTool::new(workspace.clone()))?;
-    registry.insert(GrepTool::new(workspace))?;
+    registry.insert(GrepTool::new(workspace.clone()))?;
+    registry.insert(GlobTool::new(workspace.clone()))?;
     Ok(registry)
 }
 
@@ -61,6 +66,7 @@ pub fn writeable_tool_registry(
     registry.insert(ShellTool::new(workspace.clone()))?;
     registry.insert(ApplyPatchTool::new(workspace.clone()))?;
     registry.insert(FetchUrlTool::new())?;
+    registry.insert(TodoWriteTool::new(workspace.clone()))?;
     Ok(registry)
 }
 
@@ -97,17 +103,17 @@ pub fn all_tool_registry(
 // ── Workspace path helper ───────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
-struct WorkspaceTool {
-    root: PathBuf,
+pub(crate) struct WorkspaceTool {
+    pub(crate) root: PathBuf,
 }
 
 impl WorkspaceTool {
-    fn new(root: PathBuf) -> Self {
+    pub(crate) fn new(root: PathBuf) -> Self {
         Self { root }
     }
 
     /// Resolve a path for reading — the path must exist and be within the workspace.
-    fn resolve_read(&self, path: &str) -> Result<PathBuf, ToolError> {
+    pub(crate) fn resolve_read(&self, path: &str) -> Result<PathBuf, ToolError> {
         let root = fs::canonicalize(&self.root)
             .map_err(|error| ToolError::Execution(format!("workspace does not exist: {error}")))?;
         let candidate = root.join(path.trim_start_matches('/'));
@@ -124,7 +130,7 @@ impl WorkspaceTool {
 
     /// Resolve a path for writing — the parent directory must exist and be within workspace.
     /// The target file may not exist yet (it will be created).
-    fn resolve_write(&self, path: &str) -> Result<PathBuf, ToolError> {
+    pub(crate) fn resolve_write(&self, path: &str) -> Result<PathBuf, ToolError> {
         let root = fs::canonicalize(&self.root)
             .map_err(|error| ToolError::Execution(format!("workspace does not exist: {error}")))?;
         let candidate = root.join(path.trim_start_matches('/'));
@@ -179,6 +185,8 @@ impl Tool for ListFilesTool {
                 execution: ToolExecution::ParallelSafe,
                 mutating: false,
                 timeout: None,
+                capabilities: vec![ToolCapability::ReadOnly],
+                default_approval: ApprovalRequirement::Auto,
             },
         }
     }
@@ -239,6 +247,8 @@ impl Tool for ReadFileTool {
                 execution: ToolExecution::ParallelSafe,
                 mutating: false,
                 timeout: None,
+                capabilities: vec![ToolCapability::ReadOnly],
+                default_approval: ApprovalRequirement::Auto,
             },
         }
     }
@@ -298,6 +308,8 @@ impl Tool for GrepTool {
                 execution: ToolExecution::ParallelSafe,
                 mutating: false,
                 timeout: None,
+                capabilities: vec![ToolCapability::ReadOnly],
+                default_approval: ApprovalRequirement::Auto,
             },
         }
     }
@@ -393,6 +405,8 @@ impl Tool for WriteFileTool {
                 execution: ToolExecution::Sequential,
                 mutating: true,
                 timeout: None,
+                capabilities: vec![ToolCapability::WritesFiles],
+                default_approval: ApprovalRequirement::Required,
             },
         }
     }
@@ -413,6 +427,80 @@ impl Tool for WriteFileTool {
 
 // ── EditFileTool ────────────────────────────────────────────────────────
 
+/// Standalone API: apply a string replacement to a file.
+///
+/// Returns the new content on success. Enforces exact-match semantics:
+/// - 0 occurrences → error
+/// - >1 occurrences + `replace_all=false` → error
+pub fn edit_file(
+    path: &Path,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+) -> Result<String, ToolError> {
+    let content = fs::read_to_string(path)
+        .map_err(|error| ToolError::Execution(format!("read failed: {error}")))?;
+
+    // Detect line ending style
+    let line_ending = detect_line_ending(&content);
+    let normalized_new = normalize_line_endings(new_string, line_ending);
+
+    // Count exact matches
+    let count = content.matches(old_string).count();
+    if count == 0 {
+        return Err(ToolError::InvalidArguments(
+            "old_string not found in file".into(),
+        ));
+    }
+    if count > 1 && !replace_all {
+        return Err(ToolError::InvalidArguments(format!(
+            "old_string found {count} times in file. Use replace_all=true to replace all occurrences, or provide more surrounding context to make the match unique."
+        )));
+    }
+
+    let new_content = if replace_all {
+        content.replace(old_string, &normalized_new)
+    } else {
+        content.replacen(old_string, &normalized_new, 1)
+    };
+
+    // Stale-file detection: re-read before writing
+    let current = fs::read_to_string(path)
+        .map_err(|error| ToolError::Execution(format!("stale check read: {error}")))?;
+    if current != content {
+        return Err(ToolError::Execution(
+            "file changed between read and write — re-read and try again".into(),
+        ));
+    }
+
+    fs::write(path, &new_content)
+        .map_err(|error| ToolError::Execution(format!("write failed: {error}")))?;
+
+    Ok(new_content)
+}
+
+fn detect_line_ending(content: &str) -> &str {
+    if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+fn normalize_line_endings(text: &str, line_ending: &str) -> String {
+    if line_ending == "\r\n" {
+        // Convert LF to CRLF while preserving existing CRLF
+        text.lines()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\r\n")
+            + if text.ends_with('\n') { line_ending } else { "" }
+    } else {
+        // Keep as-is (LF)
+        text.to_string()
+    }
+}
+
 #[derive(Clone, Debug)]
 struct EditFileTool {
     workspace: WorkspaceTool,
@@ -430,13 +518,14 @@ impl Tool for EditFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: ToolName::new("edit_file"),
-            description: "Replace the first occurrence of a string in a file with new content.".into(),
+            description: "Replace text in a file. old_string must match exactly. Use replace_all=true to replace all occurrences.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Workspace-relative file path." },
                     "old_string": { "type": "string", "description": "The exact text to replace." },
-                    "new_string": { "type": "string", "description": "The replacement text." }
+                    "new_string": { "type": "string", "description": "The replacement text." },
+                    "replace_all": { "type": "boolean", "description": "When true, replace all occurrences. Default: false." }
                 },
                 "required": ["path", "old_string", "new_string"]
             }),
@@ -444,6 +533,8 @@ impl Tool for EditFileTool {
                 execution: ToolExecution::Sequential,
                 mutating: true,
                 timeout: None,
+                capabilities: vec![ToolCapability::WritesFiles],
+                default_approval: ApprovalRequirement::Required,
             },
         }
     }
@@ -452,23 +543,14 @@ impl Tool for EditFileTool {
         Box::pin(async move {
             let args = parse_args::<EditFileArgs>(invocation.arguments)?;
             let path = self.workspace.resolve_read(&args.path)?;
-            let content = fs::read_to_string(&path)
-                .map_err(|error| ToolError::Execution(format!("read failed: {error}")))?;
+            let replace_all = args.replace_all.unwrap_or(false);
 
-            if !content.contains(&args.old_string) {
-                return Err(ToolError::InvalidArguments(
-                    "old_string not found in file".into(),
-                ));
-            }
-
-            // Replace only the first occurrence
-            let new_content = content.replacen(&args.old_string, &args.new_string, 1);
-            fs::write(&path, &new_content)
-                .map_err(|error| ToolError::Execution(format!("write failed: {error}")))?;
+            let _new_content = edit_file(&path, &args.old_string, &args.new_string, replace_all)?;
 
             Ok(ToolOutput::new(json!({
                 "path": args.path,
                 "replaced": true,
+                "replace_all": replace_all,
             })))
         })
     }
@@ -595,6 +677,8 @@ impl Tool for ShellTool {
                 execution: ToolExecution::Sequential,
                 mutating: true,
                 timeout: Some(std::time::Duration::from_secs(120)),
+                capabilities: vec![ToolCapability::ExecutesCode],
+                default_approval: ApprovalRequirement::Required,
             },
         }
     }
@@ -802,6 +886,8 @@ impl Tool for ApplyPatchTool {
                 execution: ToolExecution::Sequential,
                 mutating: true,
                 timeout: None,
+                capabilities: vec![ToolCapability::WritesFiles],
+                default_approval: ApprovalRequirement::Required,
             },
         }
     }
@@ -834,7 +920,7 @@ impl Tool for ApplyPatchTool {
 
 // ── Utility functions ───────────────────────────────────────────────────
 
-fn parse_args<T>(value: Value) -> Result<T, ToolError>
+pub(crate) fn parse_args<T>(value: Value) -> Result<T, ToolError>
 where
     T: for<'de> Deserialize<'de>,
 {
@@ -895,6 +981,7 @@ struct EditFileArgs {
     path: String,
     old_string: String,
     new_string: String,
+    replace_all: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

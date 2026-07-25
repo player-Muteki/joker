@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use joker::{
-    SearchFuture, SearchResult, Tool, ToolAnnotations, ToolDefinition, ToolError, ToolExecution,
-    ToolFuture, ToolInvocation, ToolName, ToolOutput, WebSearch, WebSearchError,
+    ApprovalRequirement, SearchFuture, SearchResult, Tool, ToolAnnotations, ToolCapability,
+    ToolDefinition, ToolError, ToolExecution, ToolFuture, ToolInvocation, ToolName, ToolOutput,
+    WebSearch, WebSearchError,
 };
 use serde_json::json;
 
@@ -231,6 +232,8 @@ impl Tool for WebSearchTool {
                 execution: ToolExecution::Sequential,
                 mutating: false,
                 timeout: Some(std::time::Duration::from_secs(20)),
+                capabilities: vec![ToolCapability::Network],
+                default_approval: ApprovalRequirement::Suggest,
             },
         }
     }

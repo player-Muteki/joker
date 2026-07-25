@@ -9,6 +9,8 @@ repository.workspace = true
 [dependencies]
 joker = { path = "../joker" }
 async-trait = "0.1"
+glob.workspace = true
+ignore.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -55,11 +55,13 @@ pub struct ToolDefinition {
     pub annotations: ToolAnnotations,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolAnnotations {
     pub execution: ToolExecution,
     pub mutating: bool,
     pub timeout: Option<Duration>,
+    pub capabilities: Vec<ToolCapability>,
+    pub default_approval: ApprovalRequirement,
 }
 
 impl Default for ToolAnnotations {
@@ -68,6 +70,8 @@ impl Default for ToolAnnotations {
             execution: ToolExecution::Sequential,
             mutating: false,
             timeout: None,
+            capabilities: vec![ToolCapability::ReadOnly],
+            default_approval: ApprovalRequirement::Auto,
         }
     }
 }
@@ -77,6 +81,25 @@ impl Default for ToolAnnotations {
 pub enum ToolExecution {
     Sequential,
     ParallelSafe,
+}
+
+/// What kind of side effects a tool has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCapability {
+    ReadOnly,
+    WritesFiles,
+    ExecutesCode,
+    Network,
+}
+
+/// Default approval level for a tool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalRequirement {
+    Auto,
+    Suggest,
+    Required,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

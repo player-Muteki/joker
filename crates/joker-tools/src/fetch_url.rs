@@ -1,6 +1,6 @@
 use joker::{
-    Tool, ToolAnnotations, ToolDefinition, ToolError, ToolExecution, ToolFuture, ToolInvocation,
-    ToolName, ToolOutput,
+    ApprovalRequirement, Tool, ToolAnnotations, ToolCapability, ToolDefinition, ToolError,
+    ToolExecution, ToolFuture, ToolInvocation, ToolName, ToolOutput,
 };
 use serde_json::json;
 
@@ -134,6 +134,8 @@ impl Tool for FetchUrlTool {
                 execution: ToolExecution::Sequential,
                 mutating: false,
                 timeout: Some(std::time::Duration::from_secs(30)),
+                capabilities: vec![ToolCapability::Network],
+                default_approval: ApprovalRequirement::Suggest,
             },
         }
     }

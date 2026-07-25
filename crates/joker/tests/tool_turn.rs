@@ -21,6 +21,7 @@ fn echo_tool(mutating: bool) -> ToolFn<fn(ToolInvocation) -> ToolFuture<'static>
                 execution: ToolExecution::Sequential,
                 mutating,
                 timeout: None,
+                ..ToolAnnotations::default()
             },
         },
         echo,

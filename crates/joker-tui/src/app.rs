@@ -26,6 +26,10 @@ pub struct App {
     pub compact_requested: bool,
     pub credential_store: HashMap<String, String>,
     pub api_key_input: Option<(String, String)>,
+    /// Agent management
+    pub active_agent: String,
+    pub agent_names: Vec<String>,
+    pub agent_new_state: Option<AgentNewState>,
 }
 
 #[derive(Clone, Debug)]
@@ -50,6 +54,15 @@ pub enum DialogKind {
     Provider,
     Model,
     ApiKeyInput { provider_id: String },
+    AgentSwitch,
+    AgentNew { step: usize },
+}
+
+/// State machine for the multi-step agent creation wizard.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentNewState {
+    pub agent_name: String,
+    pub step_input: String,
 }
 
 impl fmt::Debug for App {
@@ -69,6 +82,8 @@ impl fmt::Debug for App {
             .field("compact_requested", &self.compact_requested)
             .field("credential_store", &self.credential_store.keys().collect::<Vec<_>>())
             .field("api_key_input", &self.api_key_input.as_ref().map(|(p, _)| p.as_str()))
+            .field("active_agent", &self.active_agent)
+            .field("agent_names", &self.agent_names)
             .finish()
     }
 }
@@ -82,6 +97,7 @@ impl App {
     #[must_use]
     pub fn with_config(runtime_config: RuntimeConfig) -> Self {
         let status = format!("Idle ({})", runtime_config.provider_label());
+        let agent_names = vec!["plan".into(), "build".into(), "yolo".into()];
         Self {
             composer: String::new(),
             cursor: 0,
@@ -98,6 +114,9 @@ impl App {
             compact_requested: false,
             credential_store: HashMap::new(),
             api_key_input: None,
+            active_agent: "build".into(),
+            agent_names,
+            agent_new_state: None,
         }
     }
 
@@ -126,6 +145,14 @@ impl App {
             };
         }
         if self.dialog.is_some() {
+            // AgentNew wizard: custom input handling (needs mutable self)
+            if matches!(
+                self.dialog.as_ref().unwrap().kind,
+                DialogKind::AgentNew { .. }
+            ) {
+                return self.handle_agent_new_dialog_key(key);
+            }
+            // AgentSwitch and other selection dialogs
             let dialog = self.dialog.as_mut().unwrap();
             return match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -204,6 +231,114 @@ impl App {
                 Some(AppAction::Redraw)
             }
             _ => None,
+        }
+    }
+
+    fn handle_agent_new_dialog_key(&mut self, key: KeyEvent) -> Option<AppAction> {
+        let dialog = self.dialog.as_mut()?;
+        let DialogKind::AgentNew { step } = dialog.kind else {
+            return None;
+        };
+        let state = self.agent_new_state.get_or_insert_with(AgentNewState::default);
+
+        // All tools available for permission assignment
+        let tool_names: Vec<&str> = vec![
+            "list_files", "read_file", "grep", "glob",
+            "write_file", "edit_file", "apply_patch", "shell",
+            "todo_write",
+            "web_search", "fetch_url", "memory_read", "memory_write",
+        ];
+
+        match step {
+            0 => {
+                // Step 0: enter agent name (free text)
+                match key.code {
+                    KeyCode::Enter => {
+                        let name = state.step_input.trim().to_string();
+                        if name.is_empty() {
+                            return Some(AppAction::Redraw);
+                        }
+                        state.agent_name = name.clone();
+                        state.step_input.clear();
+                        dialog.kind = DialogKind::AgentNew { step: 1 };
+                        dialog.title = format!("Agent '{name}' — Tool Permissions");
+                        // Build options: tool names with default Ask
+                        dialog.options = tool_names
+                            .iter()
+                            .map(|t| (format!("[?] {t}"), t.to_string()))
+                            .collect();
+                        dialog.selected = 0;
+                        Some(AppAction::Redraw)
+                    }
+                    KeyCode::Esc => {
+                        self.dialog = None;
+                        self.agent_new_state = None;
+                        Some(AppAction::Redraw)
+                    }
+                    KeyCode::Char(ch) => {
+                        state.step_input.push(ch);
+                        dialog.title = format!("New Agent — Name: {}", state.step_input);
+                        Some(AppAction::Redraw)
+                    }
+                    KeyCode::Backspace => {
+                        state.step_input.pop();
+                        dialog.title = format!("New Agent — Name: {}", state.step_input);
+                        Some(AppAction::Redraw)
+                    }
+                    _ => Some(AppAction::Redraw),
+                }
+            }
+            _ => {
+                // Steps 1+: set permission for the selected tool
+                let idx = dialog.selected;
+                match key.code {
+                    KeyCode::Char('a') | KeyCode::Char('A') => {
+                        if let Some((label, _)) = dialog.options.get_mut(idx) {
+                            *label = format!("[Ask] {}", tool_names[idx]);
+                        }
+                        Some(AppAction::Redraw)
+                    }
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        if let Some((label, _)) = dialog.options.get_mut(idx) {
+                            *label = format!("[Auto] {}", tool_names[idx]);
+                        }
+                        Some(AppAction::Redraw)
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('N') => {
+                        if let Some((label, _)) = dialog.options.get_mut(idx) {
+                            *label = format!("[Off] {}", tool_names[idx]);
+                        }
+                        Some(AppAction::Redraw)
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        dialog.selected = dialog.selected.saturating_sub(1);
+                        Some(AppAction::Redraw)
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if dialog.selected + 1 < dialog.options.len() {
+                            dialog.selected += 1;
+                        }
+                        Some(AppAction::Redraw)
+                    }
+                    KeyCode::Enter => {
+                        // Confirm: build agent from wizard selections and close dialog
+                        let name = state.agent_name.clone();
+                        let permissions = dialog.options.clone();
+                        self.dialog = None;
+                        self.agent_new_state = None;
+                        Some(AppAction::AgentCreate {
+                            name,
+                            tool_permissions: permissions,
+                        })
+                    }
+                    KeyCode::Esc => {
+                        self.dialog = None;
+                        self.agent_new_state = None;
+                        Some(AppAction::Redraw)
+                    }
+                    _ => Some(AppAction::Redraw),
+                }
+            }
         }
     }
 
@@ -424,6 +559,10 @@ pub enum AppAction {
     ApiKeyConfirm {
         provider_id: String,
         api_key: String,
+    },
+    AgentCreate {
+        name: String,
+        tool_permissions: Vec<(String, String)>,
     },
 }
 

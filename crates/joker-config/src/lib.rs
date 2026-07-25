@@ -255,6 +255,13 @@ pub struct FileConfig {
     pub agent: BTreeMap<String, AgentProfileConfig>,
 }
 
+impl FileConfig {
+    /// Return the list of configured agent names from `[agent.<name>]` sections.
+    pub fn agent_names(&self) -> Vec<&str> {
+        self.agent.keys().map(|s| s.as_str()).collect()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ProviderConfig {
     pub kind: Option<String>,

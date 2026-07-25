@@ -2,10 +2,12 @@
 #![deny(unreachable_pub)]
 
 mod agent;
+mod agent_profiles;
 mod context;
 mod error;
 mod event;
 mod model;
+mod permission_engine;
 mod policy;
 mod protocol;
 mod credential;
@@ -16,6 +18,7 @@ mod web_search;
 pub use agent::{
     Agent, AgentBuilder, AgentConfig, ExecutionMode, RunLimits, RunOutcome, RunRequest, ToolSet,
 };
+pub use agent_profiles::{builtin_agent_profiles, builtin_constraint_file_content};
 pub use context::{
     BuiltContext, ContextBuilder, ContextError, ContextFuture, ContextInput, ContextLimits,
     FixedWindowContextBuilder, PassthroughContextBuilder, SummaryContextBuilder,
@@ -25,6 +28,9 @@ pub use event::{Event, NoopObserver, Observer, ObserverFuture, RecordingObserver
 pub use model::{
     Model, ModelError, ModelFuture, ModelRequest, ModelResponseEvent, ModelStream, ScriptedModel,
     ScriptedStep,
+};
+pub use permission_engine::{
+    AgentPermission, PermissionDecision, PermissionEngine, PermissionSetting,
 };
 pub use policy::{
     AllowAllPolicy, ApprovalRequest, ApprovalResponse, DenyAllMutatingPolicy, PermissionPolicy,
@@ -36,7 +42,7 @@ pub use protocol::{
     ToolResult, Usage,
 };
 pub use tool::{
-    Tool, ToolAnnotations, ToolDefinition, ToolError, ToolExecution, ToolFn, ToolFuture,
+    ApprovalRequirement, Tool, ToolAnnotations, ToolCapability, ToolDefinition, ToolError, ToolExecution, ToolFn, ToolFuture,
     ToolInvocation, ToolName, ToolOutput, ToolRegistry,
 };
 pub use web_search::{SearchFuture, SearchResult, WebSearch, WebSearchError};

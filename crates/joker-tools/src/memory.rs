@@ -1,8 +1,8 @@
 use std::{fs, path::PathBuf, sync::Mutex};
 
 use joker::{
-    Tool, ToolAnnotations, ToolDefinition, ToolError, ToolExecution, ToolFuture, ToolInvocation,
-    ToolName, ToolOutput,
+    ApprovalRequirement, Tool, ToolAnnotations, ToolCapability, ToolDefinition, ToolError,
+    ToolExecution, ToolFuture, ToolInvocation, ToolName, ToolOutput,
 };
 use serde_json::json;
 
@@ -57,6 +57,8 @@ impl Tool for MemoryReadTool {
                 execution: ToolExecution::Sequential,
                 mutating: false,
                 timeout: None,
+                capabilities: vec![ToolCapability::ReadOnly],
+                default_approval: ApprovalRequirement::Auto,
             },
         }
     }
@@ -132,6 +134,8 @@ impl Tool for MemoryWriteTool {
                 execution: ToolExecution::Sequential,
                 mutating: true,
                 timeout: None,
+                capabilities: vec![ToolCapability::WritesFiles],
+                default_approval: ApprovalRequirement::Auto,
             },
         }
     }
