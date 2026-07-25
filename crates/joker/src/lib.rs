@@ -20,8 +20,10 @@ pub use agent::{
 };
 pub use agent_profiles::{builtin_agent_profiles, builtin_constraint_file_content};
 pub use context::{
-    BuiltContext, ContextBuilder, ContextError, ContextFuture, ContextInput, ContextLimits,
-    FixedWindowContextBuilder, PassthroughContextBuilder, SummaryContextBuilder,
+    BuiltContext, CompactingContextBuilder, CompactionLevel, ContextBuilder, ContextError,
+    ContextFuture, ContextInput, ContextLimits, ContextThresholds, FixedWindowContextBuilder,
+    PassthroughContextBuilder, PrefixedContextBuilder, SummaryContextBuilder, estimate_tokens,
+    micro_dedup_messages,
 };
 pub use error::RunError;
 pub use event::{Event, NoopObserver, Observer, ObserverFuture, RecordingObserver};

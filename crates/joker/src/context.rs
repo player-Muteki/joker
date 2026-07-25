@@ -230,3 +230,276 @@ fn enforce_limits(messages: &[Message], limits: ContextLimits) -> Result<(), Con
     }
     Ok(())
 }
+
+// ── Token estimation ─────────────────────────────────────────────────────
+
+/// Heuristic token count estimator.
+///
+/// Uses ~4 characters per token for English text. Not exact but fast and
+/// sufficient for triggering compaction thresholds.
+#[must_use]
+pub fn estimate_tokens(messages: &[Message]) -> usize {
+    let mut total_chars = 0usize;
+    for message in messages {
+        for content in &message.content {
+            total_chars += match content {
+                Content::Text(t) => t.text.len(),
+                Content::Reasoning(r) => r.text.len(),
+                Content::ToolCall(c) => c.arguments.to_string().len() + c.name.len(),
+                Content::ToolResult(r) => r.output.to_string().len(),
+            };
+        }
+    }
+    total_chars / 4
+}
+
+/// Configuration for context compaction thresholds.
+#[derive(Clone, Copy, Debug)]
+pub struct ContextThresholds {
+    /// Token count at which to notify the user (soft limit).
+    pub soft_tokens: usize,
+    /// Token count at which to apply LLM summarization.
+    pub compact_tokens: usize,
+    /// Token count at which to force-truncate.
+    pub force_tokens: usize,
+    /// Number of recent messages to preserve during compact/force.
+    pub recent_messages: usize,
+}
+
+impl Default for ContextThresholds {
+    fn default() -> Self {
+        Self {
+            soft_tokens: 48_000,   // 50% of 96K
+            compact_tokens: 76_800, // 80% of 96K
+            force_tokens: 86_400,   // 90% of 96K
+            recent_messages: 8,
+        }
+    }
+}
+
+/// Outcome of evaluating context size against thresholds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompactionLevel {
+    /// Under all thresholds — no action needed.
+    None,
+    /// Micro dedup — replace repeated large outputs with stubs.
+    Micro,
+    /// Soft limit hit — notify user, no compression.
+    Soft,
+    /// Compact — summarize older messages, keep recent window.
+    Compact,
+    /// Force — aggressive truncation.
+    Force,
+}
+
+impl CompactionLevel {
+    /// Determine the compaction level for a token estimate.
+    #[must_use]
+    pub fn from_tokens(tokens: usize, thresholds: &ContextThresholds) -> Self {
+        if tokens >= thresholds.force_tokens {
+            Self::Force
+        } else if tokens >= thresholds.compact_tokens {
+            Self::Compact
+        } else if tokens >= thresholds.soft_tokens {
+            Self::Soft
+        } else {
+            Self::None
+        }
+    }
+}
+
+// ── Micro dedup: replace repeated large tool results with stubs ──────────
+
+/// Replace repeated read_file tool results over 2000 bytes with a stub
+/// referencing the first occurrence. Keeps context small when the same
+/// file is read multiple times.
+#[must_use]
+pub fn micro_dedup_messages(messages: &mut Vec<Message>) -> usize {
+    use std::collections::HashMap;
+    let mut dedup_count = 0usize;
+    let mut seen_files: HashMap<String, usize> = HashMap::new();
+    let stub_threshold = 2000usize;
+
+    for msg in messages.iter_mut() {
+        if msg.role != crate::Role::Tool {
+            continue;
+        }
+        for content in &mut msg.content {
+            if let Content::ToolResult(result) = content {
+                let output_str = result.output.to_string();
+                if output_str.len() < stub_threshold {
+                    continue;
+                }
+                // Try to detect read_file results by looking for "path" and "content"
+                let detected_path = output_str.lines().next()
+                    .and_then(|l| l.strip_prefix("path:").map(String::from))
+                    .or_else(|| {
+                        serde_json::from_str::<serde_json::Value>(&output_str)
+                            .ok()
+                            .and_then(|v| v.get("path").and_then(|p| p.as_str().map(String::from)))
+                    })
+                    .or_else(|| {
+                        output_str.lines().find(|l| l.trim().starts_with('"'))
+                            .map(|l| l.trim_matches('"').to_string())
+                    });
+                if let Some(path) = detected_path {
+                    if let Some(&first_idx) = seen_files.get(&path) {
+                        // Replace with stub
+                        result.output = serde_json::Value::String(format!(
+                            "[stub] Same file content as tool result #{} ({} bytes). See earlier result.",
+                            first_idx, output_str.len()
+                        ));
+                        dedup_count += 1;
+                    } else {
+                        seen_files.insert(path, seen_files.len() + 1);
+                    }
+                }
+            }
+        }
+    }
+    dedup_count
+}
+
+// ── CompactingContextBuilder ──────────────────────────────────────────────
+
+/// Wraps an inner builder and applies compaction strategies based on token
+/// thresholds.
+pub struct CompactingContextBuilder {
+    thresholds: ContextThresholds,
+    inner: Box<dyn ContextBuilder>,
+}
+
+impl CompactingContextBuilder {
+    #[must_use]
+    pub fn new(inner: Box<dyn ContextBuilder>) -> Self {
+        Self {
+            thresholds: ContextThresholds::default(),
+            inner,
+        }
+    }
+
+    #[must_use]
+    pub fn with_thresholds(mut self, thresholds: ContextThresholds) -> Self {
+        self.thresholds = thresholds;
+        self
+    }
+}
+
+impl ContextBuilder for CompactingContextBuilder {
+    fn build<'a>(&'a self, input: ContextInput<'a>) -> ContextFuture<'a> {
+        Box::pin(async move {
+            let mut messages = input.conversation.messages().to_vec();
+
+            // Micro: always active — dedup repeated large file reads
+            let _deduped = micro_dedup_messages(&mut messages);
+            let tokens = estimate_tokens(&messages);
+            let level = CompactionLevel::from_tokens(tokens, &self.thresholds);
+
+            match level {
+                CompactionLevel::None | CompactionLevel::Micro => {
+                    // Passthrough with micro dedup already applied
+                    enforce_limits(&messages, input.limits)?;
+                    return Ok(BuiltContext { messages });
+                }
+                CompactionLevel::Soft => {
+                    // Soft: return full context but signal the caller
+                    // (the caller checks CompactionLevel to notify user)
+                    enforce_limits(&messages, input.limits)?;
+                    return Ok(BuiltContext { messages });
+                }
+                CompactionLevel::Compact => {
+                    // Keep summary of old + recent window
+                    let recent = self.thresholds.recent_messages;
+                    if messages.len() > recent {
+                        let cut = messages.len() - recent;
+                        let older = messages[..cut].to_vec();
+                        let recent_msgs = messages[cut..].to_vec();
+
+                        let older_conv = Conversation::from_messages(older);
+                        let summary = SummaryContextBuilder::summarize_conversation(&older_conv);
+
+                        let mut built = Vec::new();
+                        if !summary.is_empty() {
+                            built.push(Message {
+                                role: crate::Role::System,
+                                content: vec![Content::text(format!(
+                                    "[Context summary — earlier messages compacted ({} tokens)]:\n{summary}",
+                                    estimate_tokens(&recent_msgs)
+                                ))],
+                            });
+                        }
+                        built.extend(recent_msgs);
+                        enforce_limits(&built, input.limits)?;
+                        return Ok(BuiltContext { messages: built });
+                    }
+                }
+                CompactionLevel::Force => {
+                    // Force: only keep system prompts + last K messages
+                    let recent = self.thresholds.recent_messages.min(4);
+                    let system_msgs: Vec<Message> = messages
+                        .iter()
+                        .filter(|m| m.role == crate::Role::System)
+                        .cloned()
+                        .collect();
+                    let recent_start = messages.len().saturating_sub(recent);
+                    let recent_msgs: Vec<Message> = messages[recent_start..]
+                        .iter()
+                        .filter(|m| m.role != crate::Role::System)
+                        .cloned()
+                        .collect();
+
+                    let mut built = system_msgs;
+                    if !recent_msgs.is_empty() {
+                        built.push(Message {
+                            role: crate::Role::System,
+                            content: vec![Content::text(format!(
+                                "[Context force-compacted. Showing last {} messages. Earlier content summarized above.]",
+                                recent_msgs.len()
+                            ))],
+                        });
+                    }
+                    built.extend(recent_msgs);
+                    enforce_limits(&built, input.limits)?;
+                    return Ok(BuiltContext { messages: built });
+                }
+            }
+            // Fallback
+            enforce_limits(&messages, input.limits)?;
+            Ok(BuiltContext { messages })
+        })
+    }
+}
+
+// ── PrefixedContextBuilder ────────────────────────────────────────────────
+
+/// Prepends a system message to the built context before delegating to
+/// the inner builder.
+pub struct PrefixedContextBuilder {
+    prefix: String,
+    inner: Box<dyn ContextBuilder>,
+}
+
+impl PrefixedContextBuilder {
+    #[must_use]
+    pub fn new(prefix: impl Into<String>, inner: Box<dyn ContextBuilder>) -> Self {
+        Self {
+            prefix: prefix.into(),
+            inner,
+        }
+    }
+}
+
+impl ContextBuilder for PrefixedContextBuilder {
+    fn build<'a>(&'a self, input: ContextInput<'a>) -> ContextFuture<'a> {
+        Box::pin(async move {
+            let mut built = self.inner.build(input).await?;
+            if !self.prefix.is_empty() {
+                built.messages.insert(0, Message {
+                    role: crate::Role::System,
+                    content: vec![Content::text(self.prefix.clone())],
+                });
+            }
+            Ok(built)
+        })
+    }
+}
