@@ -2,7 +2,7 @@
 
 ## 1. 项目定位
 
-Joker 是一个内核精简、API 封装优先、强自定义化的 Rust 编码代理框架。它的核心目标不是先做一个功能堆满的终端产品，而是提供一套足够小、足够清晰、可组合的 agent kernel，让开发者可以通过 Rust API 或轻量配置自由组合：
+Joker 是一个API 封装优先、强自定义化的 Rust 编码代理框架。它的核心目标不是先做一个功能堆满的终端产品，而是提供一套足够清晰、可组合的 agent kernel，让开发者可以通过 Rust API 或轻量配置自由组合：
 
 - 模型 Provider：OpenAI-compatible、DeepSeek、Anthropic、Google 等。
 - 工具集合：`read`、`write`、`web_search`、`shell`、`grep`、`apply_patch`、MCP 工具等。
@@ -10,7 +10,6 @@ Joker 是一个内核精简、API 封装优先、强自定义化的 Rust 编码�
 - 上下文构建：原始对话、固定窗口、摘要压缩、项目上下文、规则/记忆注入。
 - 运行宿主：库 API、TUI、CLI one-shot、后续可扩展到 HTTP/ACP/MCP server。
 
-一句话目标：**Joker 应该像一个"可编程 agent 运行内核"，而不是只能按固定产品形态运行的 CLI。**
 
 ## 2. 调研结论
 
@@ -22,11 +21,10 @@ Joker 是一个内核精简、API 封装优先、强自定义化的 Rust 编码�
 4. **会话和事件是后续扩展基础**：OpenCode/Codex/pi 都把 session、thread store、事件流作为恢复、压缩、UI、协议集成的基础。
 5. **扩展点比内置功能更重要**：MCP、插件、skills、hooks 的价值在于让用户自定义 agent，而不是把所有能力写死在主程序里。
 
-Joker 的取舍：不直接复制大型项目的重架构，而是保留这些项目验证过的核心边界，用小 crate 和 trait API 逐步长出能力。
 
 ## 3. 当前实现状态
 
-当前仓库已经具备一个可运行的最小 agent kernel、TUI demo、AgentBuilder/ToolSet/PermissionPolicy API、写入/Shell/Web 工具、会话持久化与记忆工具。cargo test 已通过（62 tests），覆盖 agent loop、工具调用、Provider 转换、配置、TUI 状态、session 持久化、写入工具和网络工具。
+当前仓库已经具备一个可运行的最小 agent kernel、TUI demo、AgentBuilder/ToolSet/PermissionPolicy API、写入/Shell/Web 工具、会话持久化与记忆工具。cargo test 已通过（64 tests），覆盖 agent loop、工具调用、Provider 转换、配置、TUI 状态、session 持久化、写入工具和网络工具。
 
 | 板块 | 状态 | 当前实现 |
 |---|---:|---|
@@ -50,6 +48,8 @@ Joker 的取舍：不直接复制大型项目的重架构，而是保留这些�
 | Slash command | 部分实现 | /help、/clear、/quit、/cancel、/status、/provider、/model、/models、/config、/tools、/sessions、/compact |
 | 配置系统 | 已实现 | joker.toml + CLI override + 运行时切换 + AgentProfileConfig/PermissionRuleConfig/ToolPermissionConfig |
 | 会话持久化 | 已实现 | SessionStore trait + JsonlSessionStore（JSONL 文件后端，save/load/list/delete） |
+| CredentialStore | 已实现 | 内存 + JSON 文件双后端，get/set/has/save，设计参考 pi AuthStorage |
+| API key 输入 | 已实现 | TUI 覆盖层输入框，密码遮蔽显示，/provider 切换时自动弹出 |
 | MCP/插件/skills/hooks | 未实现 | 仅有内核扩展点雏形，无动态发现/加载 |
 
 ## 4. 核心 API 设计方向
@@ -302,4 +302,5 @@ Slash command 是 TUI/CLI 宿主层能力，不应绑死核心内核。
 1. 完善 P2：多搜索后端注册、搜索结果标准化、/web slash command。
 2. 完善 P3：TUI 会话恢复功能、/compact 模型驱动摘要、/memory slash command。
 3. 开始 P4：MCP client 集成。
-4. 补充 P1/P2/P3 各模块的测试覆盖率（特别是 shell、apply_patch、fetch_url 的边界情况）。
+4. CredentialStore 文件锁支持（多进程安全）。
+5. 补充 P1/P2/P3 各模块的测试覆盖率（特别是 shell、apply_patch、fetch_url 的边界情况）。

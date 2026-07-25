@@ -4,7 +4,6 @@ use std::{
     path::{PathBuf},
 };
 
-use serde::{Deserialize, Serialize as _};
 use thiserror::Error;
 
 /// Errors from credential operations.
