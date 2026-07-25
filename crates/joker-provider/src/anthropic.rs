@@ -412,8 +412,8 @@ impl AnthropicSseParser {
                         + usage.cache_creation_input_tokens.unwrap_or(0)
                         + usage.cache_read_input_tokens.unwrap_or(0);
                     self.set_usage(Some(Usage {
-                        input_tokens: total_input as u64,
-                        output_tokens: usage.output_tokens.unwrap_or(0) as u64,
+                        input_tokens: total_input,
+                        output_tokens: usage.output_tokens.unwrap_or(0),
                     }));
                 }
                 Ok(None)
@@ -484,9 +484,9 @@ impl AnthropicSseParser {
             }
             "content_block_stop" | "content_block_stop " => {
                 // Check if we have a completed tool call at this index
-                if let Some(idx) = event.index {
-                    if let Some(tc) = self.tool_calls.remove(&idx) {
-                        if !tc.id.is_empty() && !tc.name.is_empty() {
+                if let Some(idx) = event.index
+                    && let Some(tc) = self.tool_calls.remove(&idx)
+                        && !tc.id.is_empty() && !tc.name.is_empty() {
                             let arguments: Value =
                                 serde_json::from_str(&tc.arguments).unwrap_or(Value::String(tc.arguments.clone()));
                             return Ok(Some(ParsedEvent::Event(
@@ -497,8 +497,6 @@ impl AnthropicSseParser {
                                 }),
                             )));
                         }
-                    }
-                }
                 Ok(None)
             }
             "message_delta" | "message_delta " => {
@@ -508,8 +506,8 @@ impl AnthropicSseParser {
                         + usage.cache_creation_input_tokens.unwrap_or(0)
                         + usage.cache_read_input_tokens.unwrap_or(0);
                     self.set_usage(Some(Usage {
-                        input_tokens: total_input as u64,
-                        output_tokens: usage.output_tokens.unwrap_or(0) as u64,
+                        input_tokens: total_input,
+                        output_tokens: usage.output_tokens.unwrap_or(0),
                     }));
                 }
 
@@ -543,19 +541,18 @@ impl AnthropicSseParser {
                         + usage.cache_creation_input_tokens.unwrap_or(0)
                         + usage.cache_read_input_tokens.unwrap_or(0);
                     self.set_usage(Some(Usage {
-                        input_tokens: total_input as u64,
-                        output_tokens: usage.output_tokens.unwrap_or(0) as u64,
+                        input_tokens: total_input,
+                        output_tokens: usage.output_tokens.unwrap_or(0),
                     }));
                 }
-                if let Some(delta) = &event.delta {
-                    if let Some(sr) = &delta.stop_reason {
+                if let Some(delta) = &event.delta
+                    && let Some(sr) = &delta.stop_reason {
                         let stop_reason = map_finish_reason(sr);
                         return Ok(Some(ParsedEvent::Finish {
                             stop_reason,
                             usage: self.take_usage(),
                         }));
                     }
-                }
                 if let Some(content) = &event.content_block {
                     if let Some(text) = &content.text {
                         self.pending_text.push_str(text);
@@ -598,18 +595,16 @@ impl AnthropicSseParser {
     fn finish(&mut self) -> Vec<ParsedEvent> {
         let mut events = Vec::new();
 
-        if let Some(text) = self.take_text() {
-            if !text.is_empty() {
+        if let Some(text) = self.take_text()
+            && !text.is_empty() {
                 events.push(ParsedEvent::Event(ModelResponseEvent::TextDelta(text)));
             }
-        }
-        if let Some(reasoning) = self.take_reasoning() {
-            if !reasoning.is_empty() {
+        if let Some(reasoning) = self.take_reasoning()
+            && !reasoning.is_empty() {
                 events.push(ParsedEvent::Event(ModelResponseEvent::ReasoningDelta(
                     reasoning,
                 )));
             }
-        }
 
         events
     }
@@ -727,11 +722,10 @@ async fn parse_sse_stream(
                 ParsedEvent::Finish { stop_reason, usage } => {
                     // Flush pending text/reasoning blocks before finish
                     for ev in parser.finish() {
-                        if let ParsedEvent::Event(ev) = ev {
-                            if tx.send(Ok(ev)).is_err() {
+                        if let ParsedEvent::Event(ev) = ev
+                            && tx.send(Ok(ev)).is_err() {
                                 return;
                             }
-                        }
                         _ = ev;
                     }
                     if tx
@@ -751,11 +745,10 @@ async fn parse_sse_stream(
 
     // Flush remaining pending content
     for ev in parser.finish() {
-        if let ParsedEvent::Event(ev) = ev {
-            if tx.send(Ok(ev)).is_err() {
+        if let ParsedEvent::Event(ev) = ev
+            && tx.send(Ok(ev)).is_err() {
                 return;
             }
-        }
         _ = ev;
     }
 }

@@ -52,13 +52,11 @@ impl CredentialStore {
             path: Some(path.clone()),
             dirty: false,
         };
-        if path.exists() {
-            if let Ok(data) = fs::read_to_string(&path) {
-                if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&data) {
+        if path.exists()
+            && let Ok(data) = fs::read_to_string(&path)
+                && let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&data) {
                     store.credentials = map;
                 }
-            }
-        }
         store
     }
 

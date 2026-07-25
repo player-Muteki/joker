@@ -10,6 +10,12 @@ const MAX_FETCH_BYTES: usize = 1_000_000;
 /// SSRF-protected URL fetch tool.
 pub struct FetchUrlTool;
 
+impl Default for FetchUrlTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FetchUrlTool {
     pub fn new() -> Self {
         Self

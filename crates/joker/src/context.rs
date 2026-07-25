@@ -314,7 +314,7 @@ impl CompactionLevel {
 /// referencing the first occurrence. Keeps context small when the same
 /// file is read multiple times.
 #[must_use]
-pub fn micro_dedup_messages(messages: &mut Vec<Message>) -> usize {
+pub fn micro_dedup_messages(messages: &mut [Message]) -> usize {
     use std::collections::HashMap;
     let mut dedup_count = 0usize;
     let mut seen_files: HashMap<String, usize> = HashMap::new();
@@ -366,6 +366,7 @@ pub fn micro_dedup_messages(messages: &mut Vec<Message>) -> usize {
 /// thresholds.
 pub struct CompactingContextBuilder {
     thresholds: ContextThresholds,
+    #[allow(dead_code)]
     inner: Box<dyn ContextBuilder>,
 }
 
@@ -521,10 +522,10 @@ pub fn assemble_system_prompt(
     let mut parts: Vec<String> = Vec::new();
 
     // 1. Project context
-    if let Some(ctx) = project_context {
-        if !ctx.trim().is_empty() {
-            parts.push(format!("## Project Context\n\n{ctx}"));
-        }
+    if let Some(ctx) = project_context
+        && !ctx.trim().is_empty()
+    {
+        parts.push(format!("## Project Context\n\n{ctx}"));
     }
 
     // 2. Agent constraint file
@@ -534,10 +535,10 @@ pub fn assemble_system_prompt(
     }
 
     // 3. Memory
-    if let Some(mem) = memory {
-        if !mem.trim().is_empty() {
-            parts.push(format!("## Memory\n\n{mem}"));
-        }
+    if let Some(mem) = memory
+        && !mem.trim().is_empty()
+    {
+        parts.push(format!("## Memory\n\n{mem}"));
     }
 
     if parts.is_empty() {

@@ -75,7 +75,7 @@ impl Agent {
         let cancellation_token = request
             .cancellation_token
             .clone()
-            .unwrap_or_else(CancellationToken::new);
+            .unwrap_or_default();
         observe(&self.observer, Event::RunStarted).await;
 
         let mut stop_reason = StopReason::Stop;

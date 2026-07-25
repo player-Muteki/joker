@@ -625,11 +625,9 @@ impl ShellTool {
             // Check for path traversal in shell arguments
             if trimmed.contains("..")
                 && (trimmed.contains('/') || trimmed.contains('~'))
-            {
-                if trimmed.contains("../../") {
+                && trimmed.contains("../../") {
                     warnings.push("path traversal detected".into());
                 }
-            }
 
             // Warn about background execution
             if trimmed.contains(" &") || trimmed.ends_with('&') {
@@ -817,7 +815,7 @@ impl ApplyPatchTool {
                     if content_line_idx >= current_lines.len() {
                         // If file doesn't have this line yet, append additions
                         if !hunk_additions.is_empty() {
-                            result.push_str("\n");
+                            result.push('\n');
                             result.push_str(&hunk_additions.join("\n"));
                         }
                         continue;
@@ -853,11 +851,10 @@ impl ApplyPatchTool {
                         result = new_lines.join("\n");
                     }
                     // If no match found, try searching the entire content
-                    else if let Some(pos) = result.find(&removal_text) {
-                        if !removal_text.is_empty() {
+                    else if let Some(pos) = result.find(&removal_text)
+                        && !removal_text.is_empty() {
                             result.replace_range(pos..pos + removal_text.len(), &addition_text);
                         }
-                    }
                     // If nothing matches, just skip this hunk
                 }
             } else {

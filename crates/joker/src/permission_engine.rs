@@ -65,6 +65,7 @@ pub enum PermissionDecision {
 struct SessionGrant {
     agent_name: String,
     tool_name: ToolName,
+    #[allow(dead_code)]
     granted_at: std::time::Instant,
 }
 
@@ -111,8 +112,8 @@ impl PermissionEngine {
         let profile = self.agent_permissions.get(agent_name);
 
         // Level 1: Hard permission (non-overridable, terminal)
-        if let Some(profile) = profile {
-            if let Some(ref hard) = profile.hard_permission {
+        if let Some(profile) = profile
+            && let Some(ref hard) = profile.hard_permission {
                 match hard {
                     PermissionSetting::Disabled => {
                         // Hard-disabled only blocks mutating tools; read-only still allowed
@@ -128,25 +129,22 @@ impl PermissionEngine {
                     PermissionSetting::Ask => {} // fall through
                 }
             }
-        }
 
         // Level 2: Agent-level Disabled
-        if let Some(profile) = profile {
-            if let Some(PermissionSetting::Disabled) = profile.tool_permissions.get(tool_name) {
+        if let Some(profile) = profile
+            && let Some(PermissionSetting::Disabled) = profile.tool_permissions.get(tool_name) {
                 return PermissionDecision::Deny {
                     reason: format!(
                         "tool '{tool_name}' is disabled for agent '{agent_name}'"
                     ),
                 };
             }
-        }
 
         // Level 3: Agent-level AutoAccept
-        if let Some(profile) = profile {
-            if let Some(PermissionSetting::AutoAccept) = profile.tool_permissions.get(tool_name) {
+        if let Some(profile) = profile
+            && let Some(PermissionSetting::AutoAccept) = profile.tool_permissions.get(tool_name) {
                 return PermissionDecision::Allow;
             }
-        }
 
         // Level 4: Session grant
         if self
@@ -158,15 +156,14 @@ impl PermissionEngine {
         }
 
         // Level 5: Agent-level Ask
-        if let Some(profile) = profile {
-            if let Some(PermissionSetting::Ask) = profile.tool_permissions.get(tool_name) {
+        if let Some(profile) = profile
+            && let Some(PermissionSetting::Ask) = profile.tool_permissions.get(tool_name) {
                 return PermissionDecision::Ask {
                     tool_name: tool_name.to_string(),
                     reason: format!("agent '{agent_name}' requires approval for '{tool_name}'"),
                     request_id: format!("ask-{agent_name}-{tool_name}"),
                 };
             }
-        }
 
         // Level 6: Tool annotation default
         if is_mutating {
@@ -200,14 +197,13 @@ impl PermissionEngine {
             }
 
             // Also check hard permission
-            if let Some(profile) = profile {
-                if let Some(PermissionSetting::Disabled) = &profile.hard_permission {
+            if let Some(profile) = profile
+                && let Some(PermissionSetting::Disabled) = &profile.hard_permission {
                     // If plan has hard Disabled for all mutating tools, check annotation
                     if def.annotations.mutating {
                         continue;
                     }
                 }
-            }
 
             if let Some(tool) = all_tools.get(&def.name) {
                 let _ = filtered.insert_arc(tool);
@@ -267,6 +263,7 @@ impl Default for PermissionEngine {
 struct EnginePolicy {
     engine: PermissionEngine,
     agent_name: String,
+    #[allow(dead_code)]
     approval_channel: Option<SharedApprovalChannel>,
 }
 
@@ -299,9 +296,10 @@ impl ToolPolicy for EnginePolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool::{ToolAnnotations, ToolDefinition, ToolExecution};
+    use crate::tool::{ToolAnnotations, ToolDefinition};
     use serde_json::json;
 
+    #[allow(dead_code)]
     fn test_tool(name: &str, mutating: bool) -> (ToolName, ToolDefinition) {
         let name = ToolName::new(name);
         let def = ToolDefinition {
@@ -416,7 +414,7 @@ mod tests {
         let mut engine = PermissionEngine::new();
         engine.register(plan_profile());
 
-        let mut registry = ToolRegistry::new();
+        let registry = ToolRegistry::new();
         // We can't actually insert tools easily here — just verify definitions are filtered
         // The real filtering test uses all_tool_registry in integration tests
         assert!(engine.materialize_tools("plan", &registry).definitions().is_empty());

@@ -183,15 +183,14 @@ impl ToolPolicy for PermissionPolicy {
             }
 
             // Level 4: Tool annotation default
-            if let Some(definition) = request.definition {
-                if definition.annotations.mutating {
+            if let Some(definition) = request.definition
+                && definition.annotations.mutating {
                     let mut decision = self.default_for_mutating.clone();
                     if let ToolDecision::Ask { request_id, .. } = &mut decision {
                         *request_id = format!("ask-{}", tool_name);
                     }
                     return Ok(decision);
                 }
-            }
 
             // Level 5: Global default — Allow
             Ok(ToolDecision::Allow)

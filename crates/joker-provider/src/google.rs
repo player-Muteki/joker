@@ -408,11 +408,11 @@ impl GeminiSseParser {
         let mut events = Vec::new();
 
         // Process parts
-        if let Some(content) = &candidate.content {
-            if let Some(parts) = &content.parts {
+        if let Some(content) = &candidate.content
+            && let Some(parts) = &content.parts {
                 for part in parts {
-                    if let Some(text) = &part.text {
-                        if !text.is_empty() {
+                    if let Some(text) = &part.text
+                        && !text.is_empty() {
                             if part.thought.unwrap_or(false) {
                                 events.push(ParsedEvent::Event(ModelResponseEvent::ReasoningDelta(
                                     text.clone(),
@@ -423,7 +423,6 @@ impl GeminiSseParser {
                                 )));
                             }
                         }
-                    }
 
                     if let Some(fc) = &part.function_call {
                         let name = fc.name.clone().unwrap_or_default();
@@ -438,7 +437,6 @@ impl GeminiSseParser {
                     }
                 }
             }
-        }
 
         // Check finish reason
         if let Some(finish_reason) = &candidate.finish_reason {

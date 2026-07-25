@@ -390,15 +390,13 @@ pub fn chat_request_body(model: &str, request: &ModelRequest, extra_body: Option
         "tools": request.tools.iter().map(openai_tool).collect::<Vec<_>>(),
     });
 
-    if let Some(extra) = extra_body {
-        if let Value::Object(extra_map) = extra {
-            if let Value::Object(ref mut body_map) = body {
+    if let Some(extra) = extra_body
+        && let Value::Object(extra_map) = extra
+            && let Value::Object(ref mut body_map) = body {
                 for (k, v) in extra_map {
                     body_map.insert(k.clone(), v.clone());
                 }
             }
-        }
-    }
 
     body
 }

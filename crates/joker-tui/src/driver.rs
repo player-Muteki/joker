@@ -164,7 +164,7 @@ impl AgentDriver {
         }
 
         let mut tools: Vec<Arc<dyn joker::Tool>> = Vec::new();
-        for (_name, server_cfg) in &config.mcp_servers {
+        for server_cfg in config.mcp_servers.values() {
             if let Some(command) = &server_cfg.command {
                 let mcp_cfg = joker_mcp::McpToolConfig {
                     command: command.clone(),

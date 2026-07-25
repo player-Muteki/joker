@@ -107,7 +107,7 @@ impl CommandRegistry {
             .entries
             .iter()
             .filter_map(|entry| {
-                let score = self.matcher.fuzzy_match(&entry.info.name, &query)?;
+                let score = self.matcher.fuzzy_match(entry.info.name, &query)?;
                 Some((score, entry.info))
             })
             .collect();
@@ -140,7 +140,7 @@ impl CommandRegistry {
             .entries
             .iter()
             .filter_map(|entry| {
-                let score = self.matcher.fuzzy_match(&entry.info.name, &query)?;
+                let score = self.matcher.fuzzy_match(entry.info.name, &query)?;
                 Some((score, entry.info))
             })
             .collect();
