@@ -689,13 +689,12 @@ impl AgentProfile {
 └── skills/                  # 用户自定义 skills
 ```
 
-
 ## 9. 实现进度
 
 ### 已完成
 
 | 模块 | 状态 | 说明 |
-|------|------|------|
+| --- | --- | --- |
 | **核心 loop** | ✅ | `Agent::run()` 双层循环（tool call + follow-up），Op/Event 分离 |
 | **PermissionEngine** | ✅ | 6 层优先级评估（Hard → Disabled → AutoAccept → Session → Ask → Default），`materialize_tools` 过滤 |
 | **3 个内置 Agent** | ✅ | plan（硬只读）、build（默认询问）、yolo（全自动），约束文件 `.joker/agents/{name}_agent.md` |
@@ -715,7 +714,7 @@ impl AgentProfile {
 | **CommandRegistry** | ✅ | LazyLock 全局注册，SkimMatcherV2 模糊匹配 |
 | **Tab 补全** | ✅ | 前缀匹配 → 模糊匹配，子命令递归补全 |
 | **MCP 集成** | ✅ | 独立 `joker-mcp` crate，JSON-RPC 2.0，stdio transport，工具发现 |
-| **会话持久化** | ✅ | `JsonlSessionStore`，`/sessions list|load|delete` |
+| **会话持久化** | ✅ | `JsonlSessionStore`, `/sessions list / load / delete` |
 | **会话自动保存** | ✅ | `RunCompleted` → `save_current_session` |
 | **SessionStore trait** | ✅ | `list()`, `load()`, `save()`, `delete()` |
 | **约束文件生成** | ✅ | 首次运行时写入 `plan_agent.md`, `build_agent.md`, `yolo_agent.md` |
@@ -726,7 +725,7 @@ impl AgentProfile {
 ### 待后续扩展
 
 | 模块 | 状态 | 说明 |
-|------|------|------|
+| --- | --- | --- |
 | DeepSeek 特定处理 | 🔜 | thinking/reasoning 协议差异（当前 OpenAiCompatible 通用处理） |
 | Skill 系统 | 🔜 | 自定义 prompt 注入，文件路径门控 |
 | Hook 系统 | 🔜 | 会话/回合/工具生命周期钩子 |
