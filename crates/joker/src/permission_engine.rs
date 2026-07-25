@@ -34,6 +34,19 @@ pub enum PermissionSetting {
     Disabled,
 }
 
+/// A pattern-based hard permission rule (MiMo-Code style).
+///
+/// Allows precise control like: `edit: {"*": "deny", "plans/*.md": "allow"}`.
+#[derive(Clone, Debug)]
+pub struct HardPermissionRule {
+    /// Tool name pattern (e.g. "edit", "write_file", or "*" for all).
+    pub tool_pattern: String,
+    /// Resource path pattern (e.g. "*.md", "src/*", or "*").
+    pub resource_pattern: String,
+    /// The non-overridable setting.
+    pub setting: PermissionSetting,
+}
+
 /// Permission configuration for a named agent.
 #[derive(Clone, Debug)]
 pub struct AgentPermission {
@@ -43,7 +56,22 @@ pub struct AgentPermission {
     /// Non-overridable permission — checked first and always terminal.
     /// Only meaningful when set to `Disabled` (to enforce read-only mode
     /// like plan agent) or `AutoAccept`.
+    ///
+    /// When set to a simple `PermissionSetting`, it applies to all mutating
+    /// tools. For finer-grained control, use `hard_permission_rules`.
     pub hard_permission: Option<PermissionSetting>,
+    /// Path-level precise hard permission rules (MiMo-Code style).
+    ///
+    /// Each rule specifies a tool pattern and resource path pattern.
+    /// Rules are evaluated in order — the first matching rule wins.
+    /// Example:
+    /// ```text
+    /// hard_permission_rules: [
+    ///   { tool_pattern: "edit_file", resource_pattern: "**", setting: Disabled },
+    ///   { tool_pattern: "edit_file", resource_pattern: "plans/*.md", setting: AutoAccept },
+    /// ]
+    /// ```
+    pub hard_permission_rules: Vec<HardPermissionRule>,
     /// Optional per-agent model override.
     pub model: Option<String>,
 }
@@ -103,6 +131,24 @@ impl PermissionEngine {
         });
     }
 
+    /// Check if a resource path matches a glob-like pattern.
+    fn path_matches(resource: &str, pattern: &str) -> bool {
+        if pattern == "*" || pattern == "**" {
+            return true;
+        }
+        if let Some(rest) = pattern.strip_prefix("**/") {
+            // Match anywhere in path
+            return resource.contains(&rest[..rest.len().saturating_sub(1)])
+                || resource.ends_with(rest.trim_end_matches('*'))
+                || resource.starts_with(rest.trim_end_matches('*'));
+        }
+        if pattern.contains('*') {
+            let prefix = pattern.trim_end_matches('*');
+            return resource.starts_with(prefix) || resource == prefix.trim_end_matches('*');
+        }
+        resource == pattern
+    }
+
     /// Evaluate permission for a specific agent+tool combination.
     #[must_use]
     pub fn evaluate(
@@ -110,15 +156,43 @@ impl PermissionEngine {
         agent_name: &str,
         tool_name: &ToolName,
         is_mutating: bool,
+        tool_args: Option<&serde_json::Value>,
     ) -> PermissionDecision {
         let profile = self.agent_permissions.get(agent_name);
 
-        // Level 1: Hard permission (non-overridable, terminal)
-        if let Some(profile) = profile
-            && let Some(ref hard) = profile.hard_permission {
+        // Level 1: Hard permission rules (path-level, MiMo-Code style)
+        if let Some(profile) = profile {
+            if !profile.hard_permission_rules.is_empty() {
+                let resource = tool_args
+                    .and_then(|args| args.get("path"))
+                    .or_else(|| tool_args.and_then(|args| args.get("command")))
+                    .or_else(|| tool_args.and_then(|args| args.get("file_path")))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                for rule in &profile.hard_permission_rules {
+                    let tool_matches = rule.tool_pattern == "*" || rule.tool_pattern == tool_name.as_str();
+                    let resource_matches = Self::path_matches(resource, &rule.resource_pattern);
+                    if tool_matches && resource_matches {
+                        match rule.setting {
+                            PermissionSetting::Disabled => {
+                                return PermissionDecision::Deny {
+                                    reason: format!(
+                                        "hard-disabled by rule: tool '{tool_name}' resource '{resource}' pattern '{}'",
+                                        rule.resource_pattern
+                                    ),
+                                };
+                            }
+                            PermissionSetting::AutoAccept => return PermissionDecision::Allow,
+                            PermissionSetting::Ask => {} // fall through
+                        }
+                    }
+                }
+            }
+
+            // Level 1b: Simple hard permission (legacy, blanket for all mutating)
+            if let Some(ref hard) = profile.hard_permission {
                 match hard {
                     PermissionSetting::Disabled => {
-                        // Hard-disabled only blocks mutating tools; read-only still allowed
                         if is_mutating {
                             return PermissionDecision::Deny {
                                 reason: format!(
@@ -131,6 +205,7 @@ impl PermissionEngine {
                     PermissionSetting::Ask => {} // fall through
                 }
             }
+        }
 
         // Level 2: Agent-level Disabled
         if let Some(profile) = profile
@@ -198,14 +273,40 @@ impl PermissionEngine {
                 continue;
             }
 
-            // Also check hard permission
-            if let Some(profile) = profile
-                && let Some(PermissionSetting::Disabled) = &profile.hard_permission {
-                    // If plan has hard Disabled for all mutating tools, check annotation
+            // Check hard permission rules — if ALL rules deny this tool regardless
+            // of path, we can skip it at materialize time.
+            if let Some(profile) = profile {
+                // Simple hard permission check
+                if let Some(PermissionSetting::Disabled) = &profile.hard_permission {
                     if def.annotations.mutating {
+                        // But only skip if there are no allow-override rules
+                        let has_allow_override = profile.hard_permission_rules.iter().any(|r| {
+                            (r.tool_pattern == "*" || r.tool_pattern == def.name.as_str())
+                                && r.setting == PermissionSetting::AutoAccept
+                        });
+                        if !has_allow_override {
+                            continue;
+                        }
+                    }
+                }
+                // Pattern-based hard permission: if the tool itself is hard-disabled
+                // with resource_pattern="**" and no allow overrides, skip it
+                let has_blanket_deny = profile.hard_permission_rules.iter().any(|r| {
+                    (r.tool_pattern == "*" || r.tool_pattern == def.name.as_str())
+                        && r.resource_pattern == "**"
+                        && r.setting == PermissionSetting::Disabled
+                });
+                if has_blanket_deny {
+                    let has_allow_override = profile.hard_permission_rules.iter().any(|r| {
+                        (r.tool_pattern == "*" || r.tool_pattern == def.name.as_str())
+                            && r.resource_pattern != "**"
+                            && r.setting == PermissionSetting::AutoAccept
+                    });
+                    if !has_allow_override {
                         continue;
                     }
                 }
+            }
 
             if let Some(tool) = all_tools.get(&def.name) {
                 let _ = filtered.insert_arc(tool);
@@ -277,7 +378,12 @@ impl ToolPolicy for EnginePolicy {
             .unwrap_or(true);
         let decision = self
             .engine
-            .evaluate(&self.agent_name, &request.invocation.name, is_mutating);
+            .evaluate(
+                &self.agent_name,
+                &request.invocation.name,
+                is_mutating,
+                Some(&request.invocation.arguments),
+            );
         Box::pin(async move {
             match decision {
                 PermissionDecision::Allow => Ok(ToolDecision::Allow),
@@ -327,6 +433,11 @@ mod tests {
             tool_permissions: perms,
             constraint_file: PathBuf::from("plan_agent.md"),
             hard_permission: Some(PermissionSetting::Disabled),
+            hard_permission_rules: vec![HardPermissionRule {
+                tool_pattern: "*".into(),
+                resource_pattern: "plans/*.md".into(),
+                setting: PermissionSetting::AutoAccept,
+            }],
             model: None,
         }
     }
@@ -342,6 +453,7 @@ mod tests {
             tool_permissions: perms,
             constraint_file: PathBuf::from("yolo_agent.md"),
             hard_permission: None,
+            hard_permission_rules: Vec::new(),
             model: None,
         }
     }
@@ -352,12 +464,12 @@ mod tests {
         engine.register(plan_profile());
 
         // Hard permission should deny write_file
-        let decision = engine.evaluate("plan", &ToolName::new("write_file"), true);
+        let decision = engine.evaluate("plan", &ToolName::new("write_file"), true, None);
         assert!(matches!(decision, PermissionDecision::Deny { .. }));
 
         // Even with session grant, hard permission wins
         engine.grant_session("plan", ToolName::new("write_file"));
-        let decision = engine.evaluate("plan", &ToolName::new("write_file"), true);
+        let decision = engine.evaluate("plan", &ToolName::new("write_file"), true, None);
         assert!(matches!(decision, PermissionDecision::Deny { .. }));
     }
 
@@ -366,7 +478,7 @@ mod tests {
         let mut engine = PermissionEngine::new();
         engine.register(plan_profile());
 
-        let decision = engine.evaluate("plan", &ToolName::new("read_file"), false);
+        let decision = engine.evaluate("plan", &ToolName::new("read_file"), false, None);
         assert_eq!(decision, PermissionDecision::Allow);
     }
 
@@ -375,7 +487,7 @@ mod tests {
         let mut engine = PermissionEngine::new();
         engine.register(yolo_profile());
 
-        let decision = engine.evaluate("yolo", &ToolName::new("write_file"), true);
+        let decision = engine.evaluate("yolo", &ToolName::new("write_file"), true, None);
         assert_eq!(decision, PermissionDecision::Allow);
     }
 
@@ -384,10 +496,10 @@ mod tests {
         let engine = PermissionEngine::new();
 
         // No profile registered — mutating asks, read-only allows
-        let decision = engine.evaluate("unknown", &ToolName::new("write_file"), true);
+        let decision = engine.evaluate("unknown", &ToolName::new("write_file"), true, None);
         assert!(matches!(decision, PermissionDecision::Ask { .. }));
 
-        let decision = engine.evaluate("unknown", &ToolName::new("read_file"), false);
+        let decision = engine.evaluate("unknown", &ToolName::new("read_file"), false, None);
         assert_eq!(decision, PermissionDecision::Allow);
     }
 
@@ -401,16 +513,17 @@ mod tests {
             tool_permissions: perms,
             constraint_file: PathBuf::from("build_agent.md"),
             hard_permission: None,
+            hard_permission_rules: Vec::new(),
             model: None,
         });
 
         // Should ask initially
-        let decision = engine.evaluate("build", &ToolName::new("shell"), true);
+        let decision = engine.evaluate("build", &ToolName::new("shell"), true, None);
         assert!(matches!(decision, PermissionDecision::Ask { .. }));
 
         // After session grant, should allow
         engine.grant_session("build", ToolName::new("shell"));
-        let decision = engine.evaluate("build", &ToolName::new("shell"), true);
+        let decision = engine.evaluate("build", &ToolName::new("shell"), true, None);
         assert_eq!(decision, PermissionDecision::Allow);
     }
 

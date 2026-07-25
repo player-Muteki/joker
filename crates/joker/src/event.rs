@@ -74,6 +74,14 @@ pub enum Event {
     // ── Limits (OUTLINE 2.4) ───────────────────────────────────────────
     LimitReached { reason: String },
 
+    // ── Approval request (OUTLINE 2.1: ApprovalRequest event) ───────────
+    ApprovalRequest {
+        request_id: String,
+        tool_name: String,
+        subject: String,
+        reason: String,
+    },
+
     // ── Permission (OUTLINE 2.2) ───────────────────────────────────────
     PermissionRequested {
         request_id: String,

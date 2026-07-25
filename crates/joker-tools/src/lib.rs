@@ -3,6 +3,7 @@
 
 use std::{
     fs,
+    os::unix::process::CommandExt as _,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -287,6 +288,7 @@ impl Tool for ReadFileTool {
                     "content": data_url,
                     "mime": format!("image/{ext}"),
                     "size": bytes.len(),
+                    "binary": true,
                 })));
             }
 
@@ -295,14 +297,12 @@ impl Tool for ReadFileTool {
                 .map_err(|error| ToolError::Execution(error.to_string()))?;
 
             // Detect BOM and strip for processing, but remember it
-            let (bom, text) = if let Some(stripped) = content.strip_prefix('\u{FEFF}') {
-                ("\u{FEFF}", stripped)
-            } else {
-                ("", content.as_str())
-            };
+            let has_bom = content.starts_with('\u{FEFF}');
+            let (bom, text) = if has_bom { ("\u{FEFF}", &content[3..]) } else { ("", content.as_str()) };
 
             let max_bytes = args.max_bytes.unwrap_or(64_000).min(200_000);
             let line_ending = detect_line_ending(text);
+            let line_ending_name = if line_ending == "\r\n" { "crlf" } else { "lf" };
 
             // Apply offset/limit (1-based line numbers)
             let lines: Vec<&str> = text.lines().collect();
@@ -311,7 +311,6 @@ impl Tool for ReadFileTool {
             let end_line = args.limit.map(|limit| start_line + limit).unwrap_or(total_lines);
             let selected = if start_line > 0 || end_line < total_lines {
                 if start_line >= total_lines {
-                    // offset past end: return empty but indicate total
                     return Ok(ToolOutput::new(json!({
                         "path": args.path,
                         "content": String::new(),
@@ -319,10 +318,18 @@ impl Tool for ReadFileTool {
                         "offset": args.offset.unwrap_or(1),
                         "limit": args.limit,
                         "truncated": false,
+                        "line_ending": line_ending_name,
+                        "bom": has_bom,
                     })));
                 }
-                lines[start_line..end_line.min(total_lines)].join(line_ending)
-                    + if end_line < total_lines { "\n... (showing lines {}-{} of {})" } else { "" }
+                let mut selected = lines[start_line..end_line.min(total_lines)].join(line_ending);
+                if end_line < total_lines {
+                    selected.push_str(&format!(
+                        "\n... (showing lines {}-{} of {})",
+                        start_line + 1, end_line, total_lines
+                    ));
+                }
+                selected
             } else {
                 text.to_string()
             };
@@ -335,14 +342,25 @@ impl Tool for ReadFileTool {
                 if bom.is_empty() { selected } else { format!("{bom}{selected}") }
             };
 
-            Ok(ToolOutput::new(json!({
+            let mut result = json!({
                 "path": args.path,
                 "content": text_out,
                 "line_count": total_lines,
                 "offset": args.offset.unwrap_or(1),
                 "limit": args.limit,
                 "truncated": truncated,
-            })))
+                "line_ending": line_ending_name,
+                "bom": has_bom,
+            });
+
+            // Optional code fence wrapping
+            if args.code_fence.unwrap_or(false) {
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    result["content"] = json!(format!("```{}\n{}\n```", ext, text_out));
+                }
+            }
+
+            Ok(ToolOutput::new(result))
         })
     }
 }
@@ -936,6 +954,7 @@ impl Tool for ShellTool {
 
             // Foreground execution with tokio, streaming output, and ring buffer
             let mut cmd = tokio::process::Command::new("sh");
+            cmd.as_std_mut().process_group(0); // new process group for whole tree
             cmd.arg("-c")
                 .arg(&command_str)
                 .current_dir(&root)
@@ -982,8 +1001,8 @@ impl Tool for ShellTool {
                 }
                 Ok(Err(e)) => return Err(ToolError::Execution(format!("command failed: {e}"))),
                 Err(_) => {
-                    // Timeout — kill the child process
-                    let _ = child.kill().await;
+                    // Timeout — kill the entire process group
+                    let _ = kill_process_group(child.id().unwrap_or(0));
                     let _ = child.wait().await;
                     let out = stdout_task.await.unwrap_or_default();
                     let err = stderr_task.await.unwrap_or_default();
@@ -994,6 +1013,7 @@ impl Tool for ShellTool {
                         "stderr": stderr_txt,
                         "exit_code": null,
                         "success": false,
+                        "timed_out": true,
                     });
                     if let Some(spill) = spill_path {
                         res["spill_path"] = json!(spill.to_string_lossy());
@@ -1072,6 +1092,24 @@ fn build_ring_buffer(
     };
 
     (stdout_result, stderr_result, spill_path)
+}
+
+/// Kill an entire process group by its leader PID.
+///
+/// Sends SIGTERM first; if that fails (unlikely for a valid group), falls
+/// back to SIGKILL. The negative PID targets the process group.
+fn kill_process_group(pid: u32) {
+    // SIGTERM
+    let _ = std::process::Command::new("kill")
+        .arg("--")
+        .arg(format!("-{pid}"))
+        .status();
+    // SIGKILL (force)
+    let _ = std::process::Command::new("kill")
+        .arg("-9")
+        .arg("--")
+        .arg(format!("-{pid}"))
+        .status();
 }
 
 // ── ApplyPatchTool ─────────────────────────────────────────────────────
@@ -1304,6 +1342,7 @@ struct ReadFileArgs {
     max_bytes: Option<usize>,
     offset: Option<usize>,
     limit: Option<usize>,
+    code_fence: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

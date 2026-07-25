@@ -33,6 +33,13 @@ pub enum ModelResponseEvent {
         stop_reason: StopReason,
         usage: Usage,
     },
+    /// Retry notification — the model is reconnecting after a failure.
+    /// Only emitted when no output has been produced yet.
+    Retrying {
+        attempt: u32,
+        max_retries: u32,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Error)]

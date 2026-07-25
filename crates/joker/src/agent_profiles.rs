@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use crate::permission_engine::{AgentPermission, PermissionSetting};
+use crate::permission_engine::{AgentPermission, HardPermissionRule, PermissionSetting};
 use crate::tool::ToolName;
 
 /// Create the three built-in agent profiles.
@@ -32,7 +32,7 @@ fn plan_profile(agents_dir: &std::path::Path) -> AgentPermission {
     // Memory: auto-accept (plan can read/write memory)
     perms.insert(tn("memory_read"), PermissionSetting::AutoAccept);
     perms.insert(tn("memory_write"), PermissionSetting::AutoAccept);
-    // Mutating tools: disabled (enforced by hard_permission too)
+    // Mutating tools: disabled (enforced by hard_permission + rules too)
     perms.insert(tn("write_file"), PermissionSetting::Disabled);
     perms.insert(tn("edit_file"), PermissionSetting::Disabled);
     perms.insert(tn("apply_patch"), PermissionSetting::Disabled);
@@ -47,6 +47,14 @@ fn plan_profile(agents_dir: &std::path::Path) -> AgentPermission {
         tool_permissions: perms,
         constraint_file: agents_dir.join("plan_agent.md"),
         hard_permission: Some(PermissionSetting::Disabled), // blocks all mutating tools
+        // Path-level hard rules (MiMo-Code style): plan files are the only exception
+        hard_permission_rules: vec![
+            HardPermissionRule {
+                tool_pattern: "*".into(),
+                resource_pattern: "plans/*.md".into(),
+                setting: PermissionSetting::AutoAccept,
+            },
+        ],
         model: None,
     }
 }
@@ -63,6 +71,7 @@ fn build_profile(agents_dir: &std::path::Path) -> AgentPermission {
         tool_permissions: perms,
         constraint_file: agents_dir.join("build_agent.md"),
         hard_permission: None,
+        hard_permission_rules: Vec::new(),
         model: None,
     }
 }
@@ -94,6 +103,7 @@ fn yolo_profile(agents_dir: &std::path::Path) -> AgentPermission {
         tool_permissions: perms,
         constraint_file: agents_dir.join("yolo_agent.md"),
         hard_permission: None,
+        hard_permission_rules: Vec::new(),
         model: None,
     }
 }

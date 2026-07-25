@@ -89,15 +89,19 @@ impl SharedApprovalChannel {
 
 // ── Rule-based PermissionPolicy ─────────────────────────────────────────
 
-/// A layered permission policy that evaluates tool calls against a set of rules.
+/// A layered permission policy with `findLast` match semantics.
 ///
-/// Evaluation priority (highest wins):
-/// 1. Hard deny rules (explicit `RuleDecision::Deny`)
-/// 2. Persisted allow/deny rules
-/// 3. Session allow/deny rules
-/// 4. Agent profile rules
-/// 5. Tool annotation default (mutating → Ask, read-only → Allow)
-/// 6. Global default (Allow)
+/// Evaluation priority (last match wins, like OpenCode's `findLast`):
+/// 1. Hard deny / allow from explicit rules (findLast over these)
+/// 2. Session allows
+/// 3. Persisted allows
+/// 4. Tool annotation default (mutating → Ask, read-only → Allow)
+/// 5. Global default (Allow)
+///
+/// ## Shell chain detection (gemini-cli style)
+/// For shell commands, the policy checks for chaining operators (`;`, `&&`, `||`,
+/// `|`, `$()`, `` ` ``) and redirects (`>`, `>>`, `<`). Chained commands are
+/// never automatically trusted — they always fall through to Ask.
 #[derive(Clone)]
 pub struct PermissionPolicy {
     rules: Vec<PermissionRule>,
@@ -146,33 +150,56 @@ impl PermissionPolicy {
         self.persisted_allows.push(tool_name.into());
     }
 
-    fn evaluate_rules(&self, request: &ToolPolicyRequest) -> Option<ToolDecision> {
-        for rule in &self.rules {
-            if rule.matches(request) {
-                let decision = rule.decision.clone();
-                match &decision {
-                    // Hard deny / allow are terminal at this priority level
-                    ToolDecision::Deny { .. } => return Some(decision),
-                    ToolDecision::Allow => return Some(decision),
-                    // Ask rules propagate up to be overridden by higher-priority rules
-                    ToolDecision::Ask { .. } => {}
+    /// Find the LAST matching rule (OpenCode-style `findLast` semantics).
+    fn find_last_rule(&self, request: &ToolPolicyRequest) -> Option<ToolDecision> {
+        self.rules
+            .iter()
+            .rev() // iterate in reverse → last match wins
+            .find(|rule| rule.matches(request))
+            .map(|rule| rule.decision.clone())
+    }
+
+    /// Check whether a shell command contains chain operators (gemini-cli style).
+    ///
+    /// Returns `true` if the command has `;`, `&&`, `||`, `|` (outside quotes),
+    /// or shell redirections `>`, `>>`, `<`, `<<`.
+    fn shell_has_chaining(&self, command: &str) -> bool {
+        // Simple heuristic: check for chain operators outside of quotes.
+        // This mirrors gemini-cli's hasRedirection + chained command detection.
+        let mut in_single = false;
+        let mut in_double = false;
+        let mut prev = ' ';
+        for ch in command.chars() {
+            match ch {
+                '\'' if !in_double => in_single = !in_single,
+                '"' if !in_single => in_double = !in_double,
+                ';' | '&' | '|' if !in_single && !in_double => {
+                    if ch == '|' && prev == '|' {
+                        // || is a chain operator, but single | is a pipe (also chaining)
+                    }
+                    return true;
                 }
+                '>' | '<' if !in_single && !in_double => return true,
+                _ => {}
             }
+            prev = ch;
         }
-        None
+        false
     }
 }
 
 impl ToolPolicy for PermissionPolicy {
     fn evaluate<'a>(&'a self, request: ToolPolicyRequest<'a>) -> PolicyFuture<'a> {
         Box::pin(async move {
-            // Level 1: Hard deny / allow from rules (highest priority)
-            if let Some(decision) = self.evaluate_rules(&request) {
+            let is_shell = request.invocation.name.as_str() == "shell";
+            let tool_name = request.invocation.name.as_str();
+
+            // Level 1: Explicit rules (findLast — last match wins)
+            if let Some(decision) = self.find_last_rule(&request) {
                 return Ok(decision);
             }
 
             // Level 2: Session allows
-            let tool_name = request.invocation.name.as_str();
             if self.session_allows.iter().any(|a| a == tool_name) {
                 return Ok(ToolDecision::Allow);
             }
@@ -182,7 +209,27 @@ impl ToolPolicy for PermissionPolicy {
                 return Ok(ToolDecision::Allow);
             }
 
-            // Level 4: Tool annotation default
+            // Level 4: Shell chain detection (gemini-cli style)
+            // Chained / redirected shell commands are never automatically trusted
+            if is_shell {
+                if let Some(cmd) = request
+                    .invocation
+                    .arguments
+                    .get("command")
+                    .and_then(|v| v.as_str())
+                {
+                    if self.shell_has_chaining(cmd) {
+                        return Ok(ToolDecision::Ask {
+                            request_id: format!("ask-shell-chain-{}", now_nanos()),
+                            reason: format!(
+                                "shell command with chaining/redirect requires approval: {cmd}"
+                            ),
+                        });
+                    }
+                }
+            }
+
+            // Level 5: Tool annotation default
             if let Some(definition) = request.definition
                 && definition.annotations.mutating {
                     let mut decision = self.default_for_mutating.clone();
@@ -192,7 +239,7 @@ impl ToolPolicy for PermissionPolicy {
                     return Ok(decision);
                 }
 
-            // Level 5: Global default — Allow
+            // Level 6: Global default — Allow
             Ok(ToolDecision::Allow)
         })
     }
@@ -315,4 +362,122 @@ impl ToolPolicy for DenyAllMutatingPolicy {
             }
         })
     }
+}
+
+// ── BashArityDict (CodeWhale-style command prefix recognition) ────────────
+
+/// Maps command prefixes to their expected positional arity so permission rules
+/// can distinguish `git status` from `git push` without allowing everything under `git`.
+///
+/// Reference: CodeWhale's `bash_arity.rs` which covers 30+ tools.
+#[derive(Clone, Debug)]
+pub struct BashArityDict {
+    entries: Vec<(&'static str, usize)>,
+}
+
+impl BashArityDict {
+    #[must_use]
+    pub fn new() -> Self {
+        // Common tool command prefixes and their expected subcommand depth
+        let entries: Vec<(&str, usize)> = vec![
+            ("git", 2),    // git <subcommand>
+            ("cargo", 2),  // cargo <subcommand>
+            ("npm", 2),    // npm <subcommand>
+            ("pnpm", 2),
+            ("yarn", 2),
+            ("bun", 2),
+            ("docker", 2), // docker <subcommand>
+            ("docker compose", 3),
+            ("podman", 2),
+            ("kubectl", 2),
+            ("helm", 2),
+            ("make", 1),
+            ("cmake", 2),
+            ("python", 1),
+            ("python3", 1),
+            ("pip", 2),
+            ("pip3", 2),
+            ("rustup", 2),
+            ("go", 2),     // go <subcommand>
+            ("deno", 2),
+            ("node", 1),
+            ("npx", 2),
+            ("just", 1),
+            ("cargo expand", 2), // cargo-expand
+            ("cargo nextest", 3),
+            ("cargo clippy", 2),
+            ("cargo fmt", 2),
+            ("cargo build", 2),
+            ("cargo test", 2),
+            ("cargo run", 2),
+            ("cargo check", 2),
+            ("ssh", 1),
+            ("scp", 2),
+            ("rsync", 2),
+            ("curl", 1),
+            ("wget", 1),
+            ("ls", 1),
+            ("cat", 1),
+            ("head", 1),
+            ("tail", 1),
+            ("less", 1),
+            ("more", 1),
+            ("echo", 1),
+            ("env", 1),
+            ("export", 1),
+            ("cd", 1),
+            ("mkdir", 1),
+            ("rmdir", 1),
+            ("rm", 1),
+            ("cp", 1),
+            ("mv", 1),
+            ("ln", 1),
+            ("chmod", 1),
+            ("chown", 1),
+            ("touch", 1),
+            ("find", 1),
+            ("xargs", 1),
+            ("sort", 1),
+            ("uniq", 1),
+            ("wc", 1),
+            ("tee", 1),
+            ("sed", 1),
+            ("awk", 1),
+        ];
+        Self { entries }
+    }
+
+    /// Given a full command string, find the best matching prefix and expected arity.
+    ///
+    /// Returns `(prefix, arity)` where `arity` is the number of space-delimited
+    /// segments the prefix expects. For example, `"git status -s"` matches
+    /// prefix `"git"` with arity 2, so `"git status"` is the recognized prefix.
+    #[must_use]
+    pub fn match_prefix(&self, command: &str) -> Option<(&'static str, usize)> {
+        let trimmed = command.trim_start();
+        // Try longest prefix first (greedy match)
+        for (prefix, arity) in &self.entries {
+            if trimmed.starts_with(prefix) {
+                let after_prefix = &trimmed[prefix.len()..];
+                // Prefix must be followed by space, tab, or end-of-string
+                if after_prefix.is_empty() || after_prefix.starts_with(' ') || after_prefix.starts_with('\t') {
+                    return Some((prefix, *arity));
+                }
+            }
+        }
+        None
+    }
+}
+
+impl Default for BashArityDict {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn now_nanos() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
 }

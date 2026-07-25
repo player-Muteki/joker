@@ -495,12 +495,16 @@ impl App {
                 .unwrap_or_else(|| "conversation".to_string());
 
             let id = format!("{}-{:04x}", now, rand_u16());
+            let agent_name = self.active_agent.clone();
             let data = joker::SessionData {
-                id,
+                id: id.clone(),
                 label,
                 created_at: now,
                 updated_at: now,
                 model,
+                agent_name,
+                parent_id: None,
+                root_id: id,
                 conversation: outcome.conversation,
             };
 

@@ -239,6 +239,7 @@ fn handle_agent_create(
         tool_permissions: perms,
         constraint_file: agents_dir.join(format!("{name}_agent.md")),
         hard_permission: None,
+        hard_permission_rules: Vec::new(),
         model: None,
     };
 

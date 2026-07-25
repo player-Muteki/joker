@@ -110,17 +110,17 @@ async fn e2e_permission_engine_has_builtin_profiles() {
     let engine = driver.permission_engine();
 
     // Plan agent should deny mutating tools
-    let decision = engine.evaluate("plan", &joker::ToolName::new("write_file"), true);
+    let decision = engine.evaluate("plan", &joker::ToolName::new("write_file"), true, None);
     assert!(matches!(decision, joker::PermissionDecision::Deny { .. }),
         "plan agent should hard-deny write_file: got {decision:?}");
 
     // Plan agent should allow read-only tools
-    let decision = engine.evaluate("plan", &joker::ToolName::new("read_file"), false);
+    let decision = engine.evaluate("plan", &joker::ToolName::new("read_file"), false, None);
     assert_eq!(decision, joker::PermissionDecision::Allow,
         "plan agent should allow read_file");
 
     // Yolo agent should auto-accept write_file
-    let decision = engine.evaluate("yolo", &joker::ToolName::new("write_file"), true);
+    let decision = engine.evaluate("yolo", &joker::ToolName::new("write_file"), true, None);
     assert_eq!(decision, joker::PermissionDecision::Allow,
         "yolo agent should auto-accept write_file");
 }

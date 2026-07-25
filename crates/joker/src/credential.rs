@@ -108,6 +108,9 @@ impl CredentialStore {
     }
 
     /// Persist credentials to the JSON file.
+    ///
+    /// Writes with strict `0o600` permissions (owner read/write only)
+    /// to protect API key secrets. This mirrors pi's `auth.json` pattern.
     pub fn save(&self) -> Result<(), CredentialError> {
         if let Some(path) = &self.path {
             if let Some(parent) = path.parent() {
@@ -118,6 +121,16 @@ impl CredentialStore {
                 .map_err(|e| CredentialError::Serde(e.to_string()))?;
             fs::write(path, json)
                 .map_err(|e| CredentialError::Io(e.to_string()))?;
+            // Set 0o600 permissions on Unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(metadata) = fs::metadata(path) {
+                    let mut perms = metadata.permissions();
+                    perms.set_mode(0o600);
+                    let _ = fs::set_permissions(path, perms);
+                }
+            }
         }
         Ok(())
     }

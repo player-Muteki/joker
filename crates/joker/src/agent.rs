@@ -19,6 +19,83 @@ use crate::{
     ToolPolicyRequest, ToolRegistry, ToolResult,
 };
 
+// ── PendingMessageQueue (pi-style dual queue) ─────────────────────────────
+
+/// Drain mode for a pending message queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrainMode {
+    /// Drain all queued messages at once.
+    All,
+    /// Drain only the first message, leaving the rest for later.
+    OneAtATime,
+}
+
+/// A queue of pending user messages modelled on pi's `PendingMessageQueue`.
+///
+/// Used by `AgentRuntime` to support `steer()` (injected mid-run) and
+/// `follow_up()` (injected after the agent would otherwise stop).
+#[derive(Debug)]
+pub struct PendingMessageQueue {
+    messages: std::sync::Mutex<Vec<String>>,
+}
+
+impl PendingMessageQueue {
+    #[must_use]
+    pub fn new() -> Self {
+        Self { messages: std::sync::Mutex::new(Vec::new()) }
+    }
+
+    /// Enqueue a message.
+    pub fn enqueue(&self, message: impl Into<String>) {
+        self.messages.lock().unwrap().push(message.into());
+    }
+
+    /// Drain messages according to the given mode.
+    ///
+    /// Returns the drained messages (consuming them from the queue).
+    #[must_use]
+    pub fn drain(&self, mode: DrainMode) -> Vec<String> {
+        let mut guard = self.messages.lock().unwrap();
+        match mode {
+            DrainMode::All => std::mem::take(&mut *guard),
+            DrainMode::OneAtATime => {
+                if guard.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![guard.remove(0)]
+                }
+            }
+        }
+    }
+
+    /// Returns `true` if the queue is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.messages.lock().unwrap().is_empty()
+    }
+
+    /// Returns the number of pending messages.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.messages.lock().unwrap().len()
+    }
+}
+
+impl Clone for PendingMessageQueue {
+    fn clone(&self) -> Self {
+        let guard = self.messages.lock().unwrap();
+        Self {
+            messages: std::sync::Mutex::new(guard.clone()),
+        }
+    }
+}
+
+impl Default for PendingMessageQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct Agent {
     model: Arc<dyn Model>,
     tools: Arc<ToolRegistry>,
@@ -404,7 +481,18 @@ impl Agent {
             .expect("policy futures are infallible");
 
         let result = match decision {
-            ToolDecision::Allow => self.tools.call(invocation).await,
+            ToolDecision::Allow => {
+                // Emit ToolProgress before execution
+                observe(
+                    &self.observer,
+                    Event::ToolProgress {
+                        call_id: invocation.call_id.clone(),
+                        partial_output: String::new(),
+                    },
+                )
+                .await;
+                self.tools.call(invocation).await
+            }
             ToolDecision::Deny { reason } => ToolResult::error(
                 invocation.call_id,
                 invocation.name.to_string(),
@@ -423,6 +511,18 @@ impl Agent {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+
+                // Emit ApprovalRequest event (OUTLINE 2.1)
+                observe(
+                    &self.observer,
+                    Event::ApprovalRequest {
+                        request_id: request_id.clone(),
+                        tool_name: invocation.name.to_string(),
+                        subject: subject.clone(),
+                        reason: reason.clone(),
+                    },
+                )
+                .await;
 
                 // Emit permission requested event
                 observe(
@@ -857,31 +957,63 @@ pub enum Op {
     Shutdown,
 }
 
-/// An agent execution runtime with OpLoop support.
+/// An agent execution runtime with OpLoop + steer/followUp support.
 ///
-/// Wraps an `Agent` and processes `Op` commands between turns. The underlying
-/// `Agent::run()` API is unchanged — existing code that calls `agent.run(request)`
-/// continues to work without modification.
+/// Wraps an `Agent` and offers:
+/// - `OpLoop` processing between turns (via `mpsc` channel)
+/// - `steer()` — inject a message mid-run (processed before the next inner-loop turn)
+/// - `follow_up()` — inject a message after the agent would otherwise stop
+///
+/// The underlying `Agent::run()` API is unchanged — existing code that calls
+/// `agent.run(request)` continues to work without modification.
 pub struct AgentRuntime {
     agent: Agent,
+    steering_queue: PendingMessageQueue,
+    follow_up_queue: PendingMessageQueue,
 }
 
 impl AgentRuntime {
     /// Create a new runtime wrapping an Agent.
     #[must_use]
     pub fn new(agent: Agent) -> Self {
-        Self { agent }
+        Self {
+            agent,
+            steering_queue: PendingMessageQueue::new(),
+            follow_up_queue: PendingMessageQueue::new(),
+        }
     }
 
-    /// Run with OpLoop — processes Ops between turns via the provided channel.
+    /// Inject a steering message — processed before the next inner-loop turn.
     ///
-    /// The caller is responsible for creating the channel and keeping the sender
-    /// to submit Ops during execution.
+    /// This mirrors pi's `agent.steer()` method: the message is queued and
+    /// drained before the next model call while the agent is still running.
+    /// Safe to call while the agent is running (uses internal Mutex).
+    pub fn steer(&self, message: impl Into<String>) {
+        self.steering_queue.enqueue(message);
+    }
+
+    /// Inject a follow-up message — processed after the agent would otherwise stop.
     ///
-    /// # Op processing
-    /// - `Cancel` triggers the CancellationToken (checked mid-turn also)
-    /// - `Shutdown` returns `Err(RunError::Shutdown)` at the next turn boundary
-    /// - `Compact` and `SwitchAgent` emit events for the UI to observe
+    /// This mirrors pi's `agent.followUp()` method: the message is queued and
+    /// only processed when no more tool calls or steering messages remain.
+    /// Safe to call while the agent is running (uses internal Mutex).
+    pub fn follow_up(&self, message: impl Into<String>) {
+        self.follow_up_queue.enqueue(message);
+    }
+
+    /// Run with OpLoop + steer/followUp — the full dual-loop design.
+    ///
+    /// ## Loop structure (pi-style dual loop)
+    ///
+    /// ```text
+    /// outer loop:
+    ///   inner loop (tool-call loop):
+    ///     process steering messages
+    ///     call model → execute tools → repeat if tools found
+    ///   after inner loop exits:
+    ///     check follow-up queue
+    ///     if follow-ups exist → jump back to inner loop
+    /// ```
     pub async fn run(
         &self,
         mut request: RunRequest,
@@ -903,6 +1035,7 @@ impl AgentRuntime {
         let model_id = "unknown".to_string();
 
         let mut stop_reason = StopReason::Stop;
+
         let result = async {
             if request.conversation.messages().is_empty()
                 && let Some(input) = request.input.take()
@@ -912,86 +1045,107 @@ impl AgentRuntime {
 
             let mut steps = 0usize;
             let mut tool_calls = 0usize;
+            // ── Outer loop: follow-up cycle ──────────────────────────
             loop {
-                // Process pending Ops between turns (non-blocking)
-                while let Ok(op) = rx_op.try_recv() {
-                    match op {
-                        Op::Cancel => {
-                            cancellation_token.cancel();
+                // ── Inner loop: tool-call cycle ──────────────────────
+                loop {
+                    // Process pending Ops between turns (non-blocking)
+                    while let Ok(op) = rx_op.try_recv() {
+                        match op {
+                            Op::Cancel => cancellation_token.cancel(),
+                            Op::Compact => {
+                                observe(
+                                    &self.agent.observer,
+                                    Event::CompactionStarted {
+                                        trigger: "manual".into(),
+                                        current_tokens: 0,
+                                        threshold: 0,
+                                    },
+                                )
+                                .await;
+                                observe(
+                                    &self.agent.observer,
+                                    Event::CompactionDone {
+                                        tokens_before: 0,
+                                        tokens_after: 0,
+                                    },
+                                )
+                                .await;
+                            }
+                            Op::SwitchAgent { name } => {
+                                observe(
+                                    &self.agent.observer,
+                                    Event::AgentSwitched {
+                                        from: String::new(),
+                                        to: name,
+                                    },
+                                )
+                                .await;
+                            }
+                            Op::Shutdown => return Err(RunError::Shutdown),
                         }
-                        Op::Compact => {
-                            observe(
-                                &self.agent.observer,
-                                Event::CompactionStarted {
-                                    trigger: "manual".into(),
-                                    current_tokens: 0,
-                                    threshold: 0,
-                                },
-                            )
-                            .await;
-                            observe(
-                                &self.agent.observer,
-                                Event::CompactionDone {
-                                    tokens_before: 0,
-                                    tokens_after: 0,
-                                },
-                            )
-                            .await;
-                        }
-                        Op::SwitchAgent { name } => {
-                            observe(
-                                &self.agent.observer,
-                                Event::AgentSwitched {
-                                    from: String::new(),
-                                    to: name,
-                                },
-                            )
-                            .await;
-                        }
-                        Op::Shutdown => return Err(RunError::Shutdown),
                     }
+
+                    // Drain steering messages (pi-style: all at once)
+                    let steer_msgs = self.steering_queue.drain(DrainMode::All);
+                    for msg in steer_msgs {
+                        request.conversation.push(crate::Message::user(msg));
+                    }
+
+                    if cancellation_token.is_cancelled() {
+                        return Err(RunError::Cancelled);
+                    }
+                    if steps >= self.agent.config.limits.max_steps {
+                        observe_limit(&self.agent.observer, "max_steps").await;
+                        return Ok(RunOutcome {
+                            conversation: request.conversation,
+                            stop_reason: StopReason::LimitReached,
+                        });
+                    }
+                    steps += 1;
+
+                    let outcome = self
+                        .agent
+                        .run_turn(&mut request.conversation, &turn_id, &model_id, &cancellation_token)
+                        .await?;
+
+                    if !outcome.has_tool_calls {
+                        break; // no tool calls → exit inner loop
+                    }
+
+                    if tool_calls + outcome.tool_calls_count > self.agent.config.limits.max_tool_calls
+                    {
+                        observe_limit(&self.agent.observer, "max_tool_calls").await;
+                        return Ok(RunOutcome {
+                            conversation: request.conversation,
+                            stop_reason: StopReason::LimitReached,
+                        });
+                    }
+                    tool_calls += outcome.tool_calls_count;
+
+                    let results = self
+                        .agent
+                        .execute_tool_calls(outcome.pending_tool_calls, &cancellation_token)
+                        .await?;
+                    request.conversation.push(crate::Message::tool(results));
                 }
 
-                if cancellation_token.is_cancelled() {
-                    return Err(RunError::Cancelled);
+                // ── Inner loop exited — check follow-up queue ────────
+                // pi-style: after agent would stop, check for follow-ups
+                let follow_ups = self.follow_up_queue.drain(DrainMode::All);
+                if follow_ups.is_empty() {
+                    break; // outer loop exits
                 }
-                if steps >= self.agent.config.limits.max_steps {
-                    observe_limit(&self.agent.observer, "max_steps").await;
-                    return Ok(RunOutcome {
-                        conversation: request.conversation,
-                        stop_reason: StopReason::LimitReached,
-                    });
+                for msg in follow_ups {
+                    request.conversation.push(crate::Message::user(msg));
                 }
-                steps += 1;
-
-                let outcome = self
-                    .agent
-                    .run_turn(&mut request.conversation, &turn_id, &model_id, &cancellation_token)
-                    .await?;
-
-                if !outcome.has_tool_calls {
-                    return Ok(RunOutcome {
-                        conversation: request.conversation,
-                        stop_reason: outcome.stop_reason,
-                    });
-                }
-
-                if tool_calls + outcome.tool_calls_count > self.agent.config.limits.max_tool_calls
-                {
-                    observe_limit(&self.agent.observer, "max_tool_calls").await;
-                    return Ok(RunOutcome {
-                        conversation: request.conversation,
-                        stop_reason: StopReason::LimitReached,
-                    });
-                }
-                tool_calls += outcome.tool_calls_count;
-
-                let results = self
-                    .agent
-                    .execute_tool_calls(outcome.pending_tool_calls, &cancellation_token)
-                    .await?;
-                request.conversation.push(crate::Message::tool(results));
+                // Continue outer loop → re-enter inner loop with follow-up messages
             }
+
+            Ok(RunOutcome {
+                conversation: request.conversation,
+                stop_reason: StopReason::Stop,
+            })
         }
         .await;
 
@@ -1070,6 +1224,21 @@ async fn collect_model_output(
                 model_usage = event_usage;
                 stop_reason = reason;
                 break;
+            }
+            ModelResponseEvent::Retrying {
+                attempt,
+                max_retries,
+                reason,
+            } => {
+                observe(
+                    observer,
+                    Event::Retrying {
+                        attempt: attempt as usize,
+                        max_attempts: max_retries as usize,
+                        reason: reason.clone(),
+                    },
+                )
+                .await;
             }
         }
     }
