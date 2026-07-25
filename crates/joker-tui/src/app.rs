@@ -193,6 +193,7 @@ impl App {
                 }
             }
             KeyCode::Enter => self.submit_prompt(),
+            KeyCode::Tab => self.tab_complete(),
             KeyCode::Backspace => {
                 if let Some(previous) = previous_char_boundary(&self.composer, self.cursor) {
                     self.composer.drain(previous..self.cursor);
@@ -360,6 +361,43 @@ impl App {
         self.running = true;
         self.status = "Running".into();
         Some(AppAction::Submit(prompt))
+    }
+
+    fn tab_complete(&mut self) -> Option<AppAction> {
+        if !self.composer.starts_with('/') {
+            return None;
+        }
+        // Extract the command name (first word after '/')
+        let after_slash = &self.composer[1..];
+        let cmd_end = after_slash
+            .find(char::is_whitespace)
+            .unwrap_or(after_slash.len());
+        let _current_cmd = &after_slash[..cmd_end];
+
+        let suggestions = crate::commands::suggestions(self.composer.as_str());
+        if suggestions.is_empty() {
+            return None;
+        }
+
+        // Cycle through completions: if current text already matches the first
+        // suggestion's full command name, advance to the next one.
+        let full_cmd = format!("/{}", suggestions[0].name);
+        if self.composer.len() <= full_cmd.len()
+            && full_cmd.starts_with(self.composer.as_str())
+            && self.composer == full_cmd
+        {
+            // Already completed to the first match — cycle to next
+            if suggestions.len() > 1 {
+                let next = format!("/{}", suggestions[1].name);
+                self.composer = next;
+                self.cursor = self.composer.len();
+            }
+        } else {
+            self.composer = full_cmd;
+            self.cursor = self.composer.len();
+        }
+
+        Some(AppAction::Redraw)
     }
 
     pub fn cancel_running(&mut self) {
