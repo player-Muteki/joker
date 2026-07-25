@@ -163,7 +163,7 @@ mod tests {
 
     #[tokio::test]
     async fn merge_todos_preserves_unmentioned() {
-        let tmp = std::env::temp_dir().join(format!("joker-todo-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("joker-todo-preserve-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
@@ -190,7 +190,7 @@ mod tests {
 
     #[tokio::test]
     async fn merge_todos_overwrites_by_id() {
-        let tmp = std::env::temp_dir().join(format!("joker-todo-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("joker-todo-overwrite-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 

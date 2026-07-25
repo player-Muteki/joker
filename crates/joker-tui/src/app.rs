@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use std::fmt;
-use std::collections::HashMap;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use joker::SharedApprovalChannel;
 use joker_config::RuntimeConfig;
@@ -24,7 +23,7 @@ pub struct App {
     pub approval_channel: Option<SharedApprovalChannel>,
     pub session_store: Option<Arc<dyn joker::SessionStore>>,
     pub compact_requested: bool,
-    pub credential_store: HashMap<String, String>,
+    pub credential_store: joker::CredentialStore,
     pub api_key_input: Option<(String, String)>,
     /// Agent management
     pub active_agent: String,
@@ -80,7 +79,7 @@ impl fmt::Debug for App {
             .field("approval_channel", &self.approval_channel)
             .field("session_store", &self.session_store.as_ref().map(|_| "SessionStore"))
             .field("compact_requested", &self.compact_requested)
-            .field("credential_store", &self.credential_store.keys().collect::<Vec<_>>())
+            .field("credential_store", &self.credential_store.list())
             .field("api_key_input", &self.api_key_input.as_ref().map(|(p, _)| p.as_str()))
             .field("active_agent", &self.active_agent)
             .field("agent_names", &self.agent_names)
@@ -112,7 +111,7 @@ impl App {
             approval_channel: None,
             session_store: None,
             compact_requested: false,
-            credential_store: HashMap::new(),
+            credential_store: joker::CredentialStore::new(),
             api_key_input: None,
             active_agent: "build".into(),
             agent_names,
@@ -379,6 +378,11 @@ impl App {
             self.cancel_running();
         }
         self.should_quit = true;
+    }
+
+    /// Set the file path for persistent credential storage and load existing creds.
+    pub fn set_credential_path(&mut self, path: impl Into<std::path::PathBuf>) {
+        self.credential_store = joker::CredentialStore::with_file(path);
     }
 
     /// Approve the pending tool with the given request_id.

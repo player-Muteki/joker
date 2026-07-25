@@ -47,6 +47,12 @@ pub async fn run_tui(options: TuiOptions) -> Result<(), TuiError> {
         app.session_store = Some(std::sync::Arc::new(store));
     }
 
+    // Set up credential store in ~/.joker/auth.json
+    if let Ok(home) = std::env::var("HOME") {
+        let cred_path = std::path::PathBuf::from(home).join(".joker").join("auth.json");
+        app.set_credential_path(cred_path);
+    }
+
     if let Some(prompt) = options.initial_prompt {
         app.composer = prompt;
         app.cursor = app.composer.len();
@@ -171,28 +177,33 @@ fn handle_api_key_confirm(
     provider_id: &str,
     api_key: &str,
 ) {
-    // Store credential in memory
-    app.credential_store.insert(provider_id.to_string(), api_key.to_string());
+    // Store credential in persistent store and save to disk
+    app.credential_store.set(provider_id, api_key.to_string());
+    let _ = app.credential_store.save();
 
-    // Set env var for the provider so build_model picks it up
-    let _env_key = format!("{}_API_KEY", provider_id.to_uppercase());
-    // env var set via credential_store.get() at model-build time;
-    // not needed here since switch_provider already succeeded
-
-    // Switch to the provider
-    match app.runtime_config.switch_provider(provider_id) {
-        Ok(()) => {
-            app.status = format!("Idle ({})", app.runtime_config.provider_label());
-            driver.set_runtime_config(app.runtime_config.clone());
-            app.transcript.push(crate::app::TranscriptItem::Status(
-                format!("API key stored. Switched to provider: {}", app.runtime_config.provider_label()),
-            ));
+    // Set the API key in the runtime config so model building picks it up
+    match provider_id {
+        "anthropic" => {
+            if let joker_config::ProviderSelection::Anthropic { api_key: key, .. } = &mut app.runtime_config.provider {
+                *key = Some(api_key.to_string());
+            }
         }
-        Err(error) => {
-            app.transcript
-                .push(crate::app::TranscriptItem::Error(format!("Failed: {error}")));
+        "google" => {
+            if let joker_config::ProviderSelection::Google { api_key: key, .. } = &mut app.runtime_config.provider {
+                *key = Some(api_key.to_string());
+            }
+        }
+        _ => {
+            if let joker_config::ProviderSelection::OpenAiCompatible(config) = &mut app.runtime_config.provider {
+                config.api_key = Some(api_key.to_string());
+            }
         }
     }
+
+    driver.set_runtime_config(app.runtime_config.clone());
+    app.transcript.push(crate::app::TranscriptItem::Status(
+        format!("API key stored. Switched to provider: {}", app.runtime_config.provider_label()),
+    ));
 }
 
 fn handle_agent_create(

@@ -119,6 +119,47 @@ impl OpenAiCompatibleModel {
 
         Ok(Self { config, client })
     }
+
+    /// Fetch available models from the provider's `/v1/models` endpoint.
+    ///
+    /// Returns model IDs sorted alphabetically. Falls back to a known model
+    /// list if the endpoint is unreachable or returns an error.
+    pub async fn detect_models(&self) -> Vec<String> {
+        let models_url = format!("{}/models", self.config.base_url.trim_end_matches('/'));
+        match self.client.get(&models_url).send().await {
+            Ok(response) => match response.json::<Value>().await {
+                Ok(body) => {
+                    if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+                        let mut ids: Vec<String> = data
+                            .iter()
+                            .filter_map(|entry| entry.get("id").and_then(|id| id.as_str()))
+                            .filter(|id| !id.contains("embed") && !id.contains("moderation"))
+                            .map(String::from)
+                            .collect();
+                        ids.sort();
+                        if !ids.is_empty() {
+                            return ids;
+                        }
+                    }
+                    known_model_list(&self.config.provider_name)
+                        .unwrap_or(&[&self.config.model])
+                        .iter()
+                        .map(|m| (*m).to_string())
+                        .collect()
+                }
+                Err(_) => self.fallback_models(),
+            },
+            Err(_) => self.fallback_models(),
+        }
+    }
+
+    fn fallback_models(&self) -> Vec<String> {
+        known_model_list(&self.config.provider_name)
+            .unwrap_or(&[&self.config.model])
+            .iter()
+            .map(|m| (*m).to_string())
+            .collect()
+    }
 }
 
 impl Model for OpenAiCompatibleModel {
@@ -535,6 +576,20 @@ pub const BAIDU: ProviderDescriptor = ProviderDescriptor {
         "ernie-lite",
     ],
 };
+
+/// Return the known model list for a well-known provider, or `None`.
+fn known_model_list(provider_name: &str) -> Option<&'static [&'static str]> {
+    match provider_name.to_lowercase().as_str() {
+        "deepseek" => Some(DEEPSEEK.models),
+        "alibaba" => Some(ALIBABA.models),
+        "zhipuai" => Some(ZHIPUAI.models),
+        "moonshot" => Some(MOONSHOT.models),
+        "baidu" => Some(BAIDU.models),
+        "anthropic" => Some(crate::ANTHROPIC.models),
+        "google" => Some(crate::GOOGLE.models),
+        _ => None,
+    }
+}
 
 /// Build an `OpenAiCompatibleConfig` for Alibaba DashScope with `enable_thinking` for reasoning models.
 pub fn alibaba_config(api_key: String, model: String) -> OpenAiCompatibleConfig {

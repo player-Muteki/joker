@@ -602,9 +602,10 @@ fn credentials(app: &App) -> CommandResult {
     }
     let lines: Vec<String> = app
         .credential_store
-        .iter()
-        .map(|(provider, _key)| {
-            format!("  {}: **** ({})", provider, "stored in memory")
+        .list()
+        .into_iter()
+        .map(|provider| {
+            format!("  {provider}: **** (stored)")
         })
         .collect();
     CommandResult::message(format!("Credentials ({}):\n{}", lines.len(), lines.join("\n")))
