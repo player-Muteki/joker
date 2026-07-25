@@ -6,6 +6,7 @@ use joker::{
     SharedApprovalChannel, StopReason, ToolAnnotations, ToolDefinition, ToolDecision, ToolFn,
     ToolFuture, ToolInvocation, ToolName, ToolOutput, ToolPolicy, ToolPolicyRequest,
     builtin_agent_profiles, PolicyFuture, RulePattern, SummaryContextBuilder,
+    PrefixedContextBuilder, assemble_system_prompt,
 };
 use joker_config::{ProviderSelection, RuntimeConfig};
 use joker_mcp::connect_and_discover;
@@ -67,6 +68,17 @@ impl AgentDriver {
     pub fn new(runtime_config: RuntimeConfig, workspace: impl Into<PathBuf>) -> Self {
         let workspace: PathBuf = workspace.into();
         let agents_dir = workspace.join(".joker").join("agents");
+        // Write built-in constraint files if they don't exist
+        let _ = std::fs::create_dir_all(&agents_dir);
+        for name in &["plan", "build", "yolo"] {
+            let path = agents_dir.join(format!("{name}_agent.md"));
+            if !path.exists() {
+                let content = joker::builtin_constraint_file_content(name);
+                if !content.is_empty() {
+                    let _ = std::fs::write(&path, content);
+                }
+            }
+        }
 
         let mut engine = PermissionEngine::new();
         // Register built-in agent profiles (plan, build, yolo)
@@ -227,15 +239,15 @@ impl AgentDriver {
         });
         agent = agent.with_policy(policy);
 
-        // Wrap context builder with SummaryContextBuilder when compact is pending
-        let context_builder: Arc<dyn joker::ContextBuilder> = if self.compact_pending {
-            Arc::new(SummaryContextBuilder::new(
-                20,
-                Box::new(joker::PassthroughContextBuilder),
-            ))
+        // Wrap context builder with system prompt from agent profile
+        let system_prompt = assemble_system_prompt(&self.active_agent, None, None);
+        let inner: Box<dyn joker::ContextBuilder> = if self.compact_pending {
+            Box::new(SummaryContextBuilder::new(20, Box::new(joker::PassthroughContextBuilder)))
         } else {
-            Arc::new(joker::PassthroughContextBuilder)
+            Box::new(joker::PassthroughContextBuilder)
         };
+        let context_builder: Arc<dyn joker::ContextBuilder> =
+            Arc::new(PrefixedContextBuilder::new(system_prompt, inner));
         agent = agent.with_context_builder(context_builder);
 
         Ok(agent)

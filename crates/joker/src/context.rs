@@ -503,3 +503,46 @@ impl ContextBuilder for PrefixedContextBuilder {
         })
     }
 }
+
+/// Assemble a system prompt from an agent profile, project context, and memory.
+///
+/// The prompt is built by concatenating:
+/// 1. The project's base context (`project_context`, if any)
+/// 2. The agent's constraint file content
+/// 3. Any active memory notes
+///
+/// The result is intended to be prepended via `PrefixedContextBuilder`.
+#[must_use]
+pub fn assemble_system_prompt(
+    agent_name: &str,
+    project_context: Option<&str>,
+    memory: Option<&str>,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    // 1. Project context
+    if let Some(ctx) = project_context {
+        if !ctx.trim().is_empty() {
+            parts.push(format!("## Project Context\n\n{ctx}"));
+        }
+    }
+
+    // 2. Agent constraint file
+    let constraint = crate::agent_profiles::builtin_constraint_file_content(agent_name);
+    if !constraint.is_empty() {
+        parts.push(constraint.to_string());
+    }
+
+    // 3. Memory
+    if let Some(mem) = memory {
+        if !mem.trim().is_empty() {
+            parts.push(format!("## Memory\n\n{mem}"));
+        }
+    }
+
+    if parts.is_empty() {
+        return String::new();
+    }
+
+    parts.join("\n\n")
+}
