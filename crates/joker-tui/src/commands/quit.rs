@@ -9,8 +9,8 @@ pub(super) struct QuitCommand;
 impl SlashCommand for QuitCommand {
     fn info(&self) -> CommandInfo {
         CommandInfo {
-            name: "quit",
-            usage: "/quit",
+            name: "exit",
+            usage: "/exit",
             description: "Exit Joker.",
         }
     }

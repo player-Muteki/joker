@@ -22,9 +22,11 @@ pub struct App {
     /// Shared approval channel for the current run
     pub approval_channel: Option<SharedApprovalChannel>,
     pub session_store: Option<Arc<dyn joker::SessionStore>>,
+    pub loaded_conversation: Option<joker::Conversation>,
     pub compact_requested: bool,
     pub credential_store: joker::CredentialStore,
     pub api_key_input: Option<(String, String)>,
+    pub available_models: Vec<String>,
     /// Agent management
     pub active_agent: String,
     pub agent_names: Vec<String>,
@@ -78,9 +80,11 @@ impl fmt::Debug for App {
             .field("dialog", &self.dialog)
             .field("approval_channel", &self.approval_channel)
             .field("session_store", &self.session_store.as_ref().map(|_| "SessionStore"))
+            .field("loaded_conversation", &self.loaded_conversation.as_ref().map(|c| c.messages().len()))
             .field("compact_requested", &self.compact_requested)
             .field("credential_store", &self.credential_store.list())
             .field("api_key_input", &self.api_key_input.as_ref().map(|(p, _)| p.as_str()))
+            .field("available_models", &self.available_models)
             .field("active_agent", &self.active_agent)
             .field("agent_names", &self.agent_names)
             .finish()
@@ -97,6 +101,7 @@ impl App {
     pub fn with_config(runtime_config: RuntimeConfig) -> Self {
         let status = format!("Idle ({})", runtime_config.provider_label());
         let agent_names = vec!["plan".into(), "build".into(), "yolo".into()];
+        let available_models = runtime_config.available_models();
         Self {
             composer: String::new(),
             cursor: 0,
@@ -110,9 +115,11 @@ impl App {
             dialog: None,
             approval_channel: None,
             session_store: None,
+            loaded_conversation: None,
             compact_requested: false,
             credential_store: joker::CredentialStore::new(),
             api_key_input: None,
+            available_models,
             active_agent: "build".into(),
             agent_names,
             agent_new_state: None,
@@ -172,6 +179,25 @@ impl App {
                 }
                 KeyCode::Esc => {
                     self.dialog = None;
+                    Some(AppAction::Redraw)
+                }
+                _ => None,
+            };
+        }
+        if self.running
+            && let Some(request_id) = self.pending_approval_request_id()
+        {
+            return match key.code {
+                KeyCode::Char('a') | KeyCode::Char('A') => {
+                    self.approve_pending(&request_id, false);
+                    Some(AppAction::Redraw)
+                }
+                KeyCode::Char('s') | KeyCode::Char('S') => {
+                    self.approve_pending(&request_id, true);
+                    Some(AppAction::Redraw)
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') => {
+                    self.deny_pending(&request_id, None);
                     Some(AppAction::Redraw)
                 }
                 _ => None,
@@ -445,6 +471,16 @@ impl App {
             .push(TranscriptItem::Status(format!("Denied: {request_id}")));
     }
 
+    fn pending_approval_request_id(&self) -> Option<String> {
+        self.transcript.iter().rev().find_map(|item| {
+            if let TranscriptItem::ApprovalRequest { request_id, .. } = item {
+                Some(request_id.clone())
+            } else {
+                None
+            }
+        })
+    }
+
     pub fn apply_ui_event(&mut self, event: UiEvent) {
         match event {
             UiEvent::Agent(event) => self.apply_agent_event(event),
@@ -463,6 +499,22 @@ impl App {
                     }
                 }
             }
+            UiEvent::ModelDiscoveryCompleted(result) => match result {
+                Ok(models) => {
+                    if !models.is_empty() {
+                        self.available_models = models;
+                    }
+                    self.transcript.push(TranscriptItem::Status(format!(
+                        "Discovered {} model(s).",
+                        self.available_models.len()
+                    )));
+                }
+                Err(error) => {
+                    self.transcript.push(TranscriptItem::Status(format!(
+                        "Model discovery failed: {error}"
+                    )));
+                }
+            },
             UiEvent::Tick | UiEvent::Terminal(_) => {}
         }
     }

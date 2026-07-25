@@ -42,6 +42,7 @@ impl Observer for ChannelObserver {
 pub struct AgentDriver {
     runtime_config: RuntimeConfig,
     workspace: PathBuf,
+    agents_dir: PathBuf,
     compact_pending: bool,
     permission_engine: PermissionEngine,
     active_agent: String,
@@ -53,6 +54,7 @@ impl std::fmt::Debug for AgentDriver {
         f.debug_struct("AgentDriver")
             .field("runtime_config", &self.runtime_config)
             .field("workspace", &self.workspace)
+            .field("agents_dir", &self.agents_dir)
             .field("compact_pending", &self.compact_pending)
             .field("active_agent", &self.active_agent)
             .field("mcp_tools", &self.mcp_tools.lock().unwrap().len())
@@ -64,7 +66,21 @@ impl AgentDriver {
     #[must_use]
     pub fn new(runtime_config: RuntimeConfig, workspace: impl Into<PathBuf>) -> Self {
         let workspace: PathBuf = workspace.into();
-        let agents_dir = workspace.join(".joker").join("agents");
+        Self::new_with_agents_dir(
+            runtime_config,
+            workspace.clone(),
+            workspace.join(".joker").join("agents"),
+        )
+    }
+
+    #[must_use]
+    pub fn new_with_agents_dir(
+        runtime_config: RuntimeConfig,
+        workspace: impl Into<PathBuf>,
+        agents_dir: impl Into<PathBuf>,
+    ) -> Self {
+        let workspace: PathBuf = workspace.into();
+        let agents_dir: PathBuf = agents_dir.into();
         // Write built-in constraint files if they don't exist
         let _ = std::fs::create_dir_all(&agents_dir);
         for name in &["plan", "build", "yolo"] {
@@ -94,6 +110,7 @@ impl AgentDriver {
         Self {
             runtime_config,
             workspace,
+            agents_dir,
             compact_pending: false,
             permission_engine: engine,
             active_agent: "build".into(),
@@ -124,6 +141,11 @@ impl AgentDriver {
         &self.workspace
     }
 
+    #[must_use]
+    pub fn agents_dir(&self) -> &PathBuf {
+        &self.agents_dir
+    }
+
     pub fn permission_engine_mut(&mut self) -> &mut PermissionEngine {
         &mut self.permission_engine
     }
@@ -138,6 +160,26 @@ impl AgentDriver {
         let agent = self.build_agent(tx.clone(), approval_channel.clone())?;
         Ok(tokio::spawn(async move {
             let request = RunRequest::new(prompt)
+                .with_cancellation_token(cancellation_token)
+                .with_approval_channel(approval_channel);
+            let result = agent
+                .run(request)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = tx.send(UiEvent::RunCompleted(result));
+        }))
+    }
+
+    pub fn spawn_run_with_conversation(
+        &self,
+        conversation: joker::Conversation,
+        cancellation_token: CancellationToken,
+        tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
+        approval_channel: SharedApprovalChannel,
+    ) -> Result<JoinHandle<()>, TuiError> {
+        let agent = self.build_agent(tx.clone(), approval_channel.clone())?;
+        Ok(tokio::spawn(async move {
+            let request = RunRequest::with_conversation(conversation)
                 .with_cancellation_token(cancellation_token)
                 .with_approval_channel(approval_channel);
             let result = agent

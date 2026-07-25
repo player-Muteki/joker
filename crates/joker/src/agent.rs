@@ -562,7 +562,7 @@ impl Agent {
 
                 match approval {
                     Some(ApprovalResponse::Approved {
-                        remember_for_session: _,
+                        remember_for_session,
                     }) => {
                         observe(
                             &self.observer,
@@ -573,6 +573,11 @@ impl Agent {
                             },
                         )
                         .await;
+                        if remember_for_session {
+                            if let Some(channel) = &self.approval_channel {
+                                channel.grant_for_session(invocation.name.to_string());
+                            }
+                        }
                         self.tools.call(invocation).await
                     }
                     Some(ApprovalResponse::Denied { reason }) => {

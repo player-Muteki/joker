@@ -392,10 +392,20 @@ impl ToolPolicy for EnginePolicy {
                     tool_name,
                     reason,
                     request_id,
-                } => Ok(ToolDecision::Ask {
-                    request_id,
-                    reason: format!("{tool_name}: {reason}"),
-                }),
+                } => {
+                    if self
+                        .approval_channel
+                        .as_ref()
+                        .is_some_and(|channel| channel.is_granted_for_session(&tool_name))
+                    {
+                        Ok(ToolDecision::Allow)
+                    } else {
+                        Ok(ToolDecision::Ask {
+                            request_id,
+                            reason: format!("{tool_name}: {reason}"),
+                        })
+                    }
+                }
             }
         })
     }

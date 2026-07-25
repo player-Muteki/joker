@@ -67,8 +67,12 @@ impl SlashCommand for ModelCommand {
 }
 
 fn available_models_for_dialog(app: &App) -> Vec<(String, String)> {
-    app.runtime_config
-        .available_models()
+    let models = if app.available_models.is_empty() {
+        app.runtime_config.available_models()
+    } else {
+        app.available_models.clone()
+    };
+    models
         .into_iter()
         .map(|m| (m.clone(), m))
         .collect()

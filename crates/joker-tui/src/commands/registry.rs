@@ -52,7 +52,7 @@ impl CommandRegistry {
             .map(str::trim)
             .filter(|value| !value.is_empty());
 
-        if name.is_empty() || name == "help" {
+        if name.is_empty() {
             return self.build_help(args);
         }
 
@@ -60,15 +60,6 @@ impl CommandRegistry {
         for entry in &self.entries {
             if entry.info.name == name {
                 return entry.handler.execute(app, args, config_store);
-            }
-        }
-
-        // Alias: "exit" -> "quit"
-        if name == "exit" {
-            for entry in &self.entries {
-                if entry.info.name == "quit" {
-                    return entry.handler.execute(app, args, config_store);
-                }
             }
         }
 
@@ -91,13 +82,27 @@ impl CommandRegistry {
 
     /// Return completion candidates for a partial slash-command input.
     pub fn complete(&self, input: &str) -> Vec<CommandInfo> {
-        let query = input
-            .trim()
-            .trim_start_matches('/')
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+        let trimmed = input.trim().trim_start_matches('/');
+        let has_args = trimmed.contains(char::is_whitespace);
+        let mut parts = trimmed.splitn(2, char::is_whitespace);
+        let command_name = parts.next().unwrap_or_default().to_ascii_lowercase();
+        let args_partial = parts.next().unwrap_or_default();
+
+        if has_args
+            && let Some(entry) = self.entries.iter().find(|entry| entry.info.name == command_name)
+        {
+            let completions = entry.handler.complete(args_partial);
+            return completions
+                .into_iter()
+                .map(|completion| CommandInfo {
+                    name: Box::leak(format!("{} {}", entry.info.name, completion).into_boxed_str()),
+                    usage: entry.info.usage,
+                    description: entry.info.description,
+                })
+                .collect();
+        }
+
+        let query = command_name;
 
         if query.is_empty() {
             return self.entries.iter().map(|e| e.info).collect();

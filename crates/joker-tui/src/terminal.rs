@@ -40,7 +40,12 @@ pub async fn run_tui(options: TuiOptions) -> Result<(), TuiError> {
 
     let mut app = App::with_config(options.runtime_config.clone());
     let workspace = std::env::current_dir()?;
-    let mut driver = AgentDriver::new(options.runtime_config.clone(), workspace);
+    let agents_dir = joker_home_dir().join("agents");
+    let mut driver = AgentDriver::new_with_agents_dir(
+        options.runtime_config.clone(),
+        workspace,
+        agents_dir,
+    );
 
     // Connect to MCP servers configured in joker.toml
     driver.init_mcp_servers().await;
@@ -52,10 +57,7 @@ pub async fn run_tui(options: TuiOptions) -> Result<(), TuiError> {
     }
 
     // Set up credential store in ~/.joker/auth.json
-    if let Ok(home) = std::env::var("HOME") {
-        let cred_path = std::path::PathBuf::from(home).join(".joker").join("auth.json");
-        app.set_credential_path(cred_path);
-    }
+    app.set_credential_path(joker_home_dir().join("auth.json"));
 
     if let Some(prompt) = options.initial_prompt {
         app.composer = prompt;
@@ -91,7 +93,9 @@ pub async fn run_tui(options: TuiOptions) -> Result<(), TuiError> {
                 }
             }
             UiEvent::Terminal(CrosstermEvent::Resize(_, _)) | UiEvent::Tick => {}
-            UiEvent::Agent(_) | UiEvent::RunCompleted(_) => app.apply_ui_event(event),
+            UiEvent::Agent(_) | UiEvent::RunCompleted(_) | UiEvent::ModelDiscoveryCompleted(_) => {
+                app.apply_ui_event(event)
+            }
             UiEvent::Terminal(_) => {}
         }
 
@@ -157,14 +161,14 @@ fn handle_action(
         AppAction::Command(command) => {
             let result = commands::execute(&command, app, config_store);
             if let Some(action) = result.action {
-                handle_command_action(app, driver, action);
+                handle_command_action(app, driver, action, tx);
             }
         }
         AppAction::DialogConfirm { kind, selection } => {
-            handle_dialog_confirm(app, driver, kind, &selection);
+            handle_dialog_confirm(app, driver, kind, &selection, tx);
         }
         AppAction::ApiKeyConfirm { provider_id, api_key } => {
-            handle_api_key_confirm(app, driver, &provider_id, &api_key);
+            handle_api_key_confirm(app, driver, &provider_id, &api_key, tx);
         }
         AppAction::Cancel => app.cancel_running(),
         AppAction::Quit => app.quit(),
@@ -180,6 +184,7 @@ fn handle_api_key_confirm(
     driver: &mut AgentDriver,
     provider_id: &str,
     api_key: &str,
+    tx: mpsc::UnboundedSender<UiEvent>,
 ) {
     // Store credential in persistent store and save to disk
     app.credential_store.set(provider_id, api_key.to_string());
@@ -194,6 +199,7 @@ fn handle_api_key_confirm(
     app.transcript.push(crate::app::TranscriptItem::Status(
         format!("API key stored. Switched to provider: {}", app.runtime_config.provider_label()),
     ));
+    spawn_model_discovery(app, tx);
 }
 
 fn handle_agent_create(
@@ -233,7 +239,7 @@ fn handle_agent_create(
         );
     }
 
-    let agents_dir = driver.workspace().join(".joker").join("agents");
+    let agents_dir = driver.agents_dir().clone();
     let agent_perm = AgentPermission {
         agent_name: name.to_string(),
         tool_permissions: perms,
@@ -247,21 +253,24 @@ fn handle_agent_create(
     app.agent_names.push(name.to_string());
 
     // Persist to joker.toml
-    if let Ok(raw) = std::fs::read_to_string(config_store.path())
-        && let Ok(mut file) = toml::from_str::<joker_config::FileConfig>(&raw)
-    {
-        file.agent.insert(
-            name.to_string(),
-            joker_config::AgentProfileConfig {
-                model: None,
-                system: None,
-                tools: file_tools,
-                permissions: joker_config::PermissionRuleConfig::default(),
-            },
-        );
-        if let Ok(raw) = toml::to_string_pretty(&file) {
-            let _ = std::fs::write(config_store.path(), raw);
+    let mut file = std::fs::read_to_string(config_store.path())
+        .ok()
+        .and_then(|raw| toml::from_str::<joker_config::FileConfig>(&raw).ok())
+        .unwrap_or_default();
+    file.agent.insert(
+        name.to_string(),
+        joker_config::AgentProfileConfig {
+            model: None,
+            system: None,
+            tools: file_tools,
+            permissions: joker_config::PermissionRuleConfig::default(),
+        },
+    );
+    if let Ok(raw) = toml::to_string_pretty(&file) {
+        if let Some(parent) = config_store.path().parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
+        let _ = std::fs::write(config_store.path(), raw);
     }
 
     // Generate constraint file
@@ -283,21 +292,37 @@ Custom agent created via /agent new.
     )));
 }
 
+fn joker_home_dir() -> std::path::PathBuf {
+    std::env::var_os("JOKER_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .map(|home| home.join(".joker"))
+        })
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join(".joker")
+        })
+}
+
 fn handle_dialog_confirm(
     app: &mut App,
     driver: &mut AgentDriver,
     kind: DialogKind,
     selection: &str,
+    tx: mpsc::UnboundedSender<UiEvent>,
 ) {
     match kind {
         DialogKind::Provider => match app.runtime_config.switch_provider(selection) {
             Ok(()) => {
                 app.status = format!("Idle ({})", app.runtime_config.provider_label());
-                driver.set_runtime_config(app.runtime_config.clone());
                 app.transcript.push(TranscriptItem::Status(format!(
                     "Switched provider to {}",
                     app.runtime_config.provider_label()
                 )));
+                sync_provider_after_change(app, driver, tx);
             }
             Err(error) => {
                 app.transcript
@@ -331,7 +356,12 @@ fn handle_dialog_confirm(
     }
 }
 
-fn handle_command_action(app: &mut App, driver: &mut AgentDriver, action: CommandAction) {
+fn handle_command_action(
+    app: &mut App,
+    driver: &mut AgentDriver,
+    action: CommandAction,
+    tx: mpsc::UnboundedSender<UiEvent>,
+) {
     match action {
         CommandAction::Cancel => app.cancel_running(),
         CommandAction::Clear => {
@@ -341,10 +371,51 @@ fn handle_command_action(app: &mut App, driver: &mut AgentDriver, action: Comman
         }
         CommandAction::ConfigChanged => {
             app.status = format!("Idle ({})", app.runtime_config.provider_label());
-            driver.set_runtime_config(app.runtime_config.clone());
+            driver.set_active_agent(app.active_agent.clone());
+            sync_provider_after_change(app, driver, tx);
         }
         CommandAction::Quit => app.quit(),
     }
+}
+
+fn sync_provider_after_change(
+    app: &mut App,
+    driver: &mut AgentDriver,
+    tx: mpsc::UnboundedSender<UiEvent>,
+) {
+    app.available_models = app.runtime_config.available_models();
+    let mut needs_api_key = false;
+
+    if let joker_config::ProviderSelection::Route(route) = &mut app.runtime_config.provider {
+        let provider_id = route.id.clone();
+        if let Some(api_key) = app.credential_store.get(&provider_id) {
+            route.auth.credentials = CredentialSource::Value(api_key);
+        } else if let CredentialSource::EnvVar(env_var) = &route.auth.credentials {
+            if std::env::var(env_var).is_err() {
+                app.api_key_input = Some((provider_id.clone(), String::new()));
+                app.transcript.push(TranscriptItem::Status(format!(
+                    "Enter API key for {provider_id}."
+                )));
+                needs_api_key = true;
+            }
+        }
+    }
+
+    driver.set_runtime_config(app.runtime_config.clone());
+    if !needs_api_key {
+        spawn_model_discovery(app, tx);
+    }
+}
+
+fn spawn_model_discovery(app: &App, tx: mpsc::UnboundedSender<UiEvent>) {
+    let joker_config::ProviderSelection::Route(route) = &app.runtime_config.provider else {
+        return;
+    };
+    let route = route.clone();
+    tokio::spawn(async move {
+        let result = joker_provider::discover_models(&route.base_url, &route.auth).await;
+        let _ = tx.send(UiEvent::ModelDiscoveryCompleted(result));
+    });
 }
 
 fn spawn_agent_run(
@@ -366,7 +437,14 @@ fn spawn_agent_run(
     let approval_channel = SharedApprovalChannel::new();
     app.approval_channel = Some(approval_channel.clone());
 
-    if let Err(error) = driver.spawn_run(prompt, cancellation_token, tx, approval_channel) {
+    let run_result = if let Some(mut conversation) = app.loaded_conversation.take() {
+        conversation.push(joker::Message::user(prompt));
+        driver.spawn_run_with_conversation(conversation, cancellation_token, tx, approval_channel)
+    } else {
+        driver.spawn_run(prompt, cancellation_token, tx, approval_channel)
+    };
+
+    if let Err(error) = run_result {
         app.running = false;
         app.cancellation_token = None;
         app.approval_channel = None;

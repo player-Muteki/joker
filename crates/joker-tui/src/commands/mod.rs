@@ -1,20 +1,10 @@
 mod agent;
-mod approve;
-mod cancel;
-mod clear;
 mod compact;
-mod config;
-mod credentials;
-mod deny;
-mod help;
 mod model;
-mod models;
 mod provider;
 mod quit;
 pub mod registry;
 mod sessions;
-mod status;
-mod tools;
 
 use std::sync::LazyLock;
 
@@ -107,19 +97,9 @@ fn global_registry() -> &'static CommandRegistry {
         let mut registry = CommandRegistry::new();
         use std::sync::Arc;
 
-        registry.register(Arc::new(help::HelpCommand));
-        registry.register(Arc::new(clear::ClearCommand));
         registry.register(Arc::new(quit::QuitCommand));
-        registry.register(Arc::new(cancel::CancelCommand));
-        registry.register(Arc::new(status::StatusCommand));
         registry.register(Arc::new(provider::ProviderCommand));
         registry.register(Arc::new(model::ModelCommand));
-        registry.register(Arc::new(models::ModelsCommand));
-        registry.register(Arc::new(config::ConfigCommand));
-        registry.register(Arc::new(tools::ToolsCommand));
-        registry.register(Arc::new(credentials::CredentialsCommand));
-        registry.register(Arc::new(approve::ApproveCommand));
-        registry.register(Arc::new(deny::DenyCommand));
         registry.register(Arc::new(sessions::SessionsCommand));
         registry.register(Arc::new(compact::CompactCommand));
         registry.register(Arc::new(agent::AgentCommand));

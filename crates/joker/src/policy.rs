@@ -51,6 +51,7 @@ pub struct SharedApprovalChannel {
 struct SharedApprovalState {
     pending: Option<ApprovalRequest>,
     response: Option<ApprovalResponse>,
+    session_allows: Vec<String>,
 }
 
 impl SharedApprovalChannel {
@@ -84,6 +85,24 @@ impl SharedApprovalChannel {
             .expect("approval channel lock")
             .pending
             .clone()
+    }
+
+    pub fn grant_for_session(&self, tool_name: impl Into<String>) {
+        let tool_name = tool_name.into();
+        let mut state = self.inner.lock().expect("approval channel lock");
+        if !state.session_allows.iter().any(|name| name == &tool_name) {
+            state.session_allows.push(tool_name);
+        }
+    }
+
+    #[must_use]
+    pub fn is_granted_for_session(&self, tool_name: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("approval channel lock")
+            .session_allows
+            .iter()
+            .any(|name| name == tool_name)
     }
 }
 

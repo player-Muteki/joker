@@ -101,6 +101,8 @@ fn sessions_load(app: &mut App, id: &str) -> CommandResult {
         match result {
             Ok(Some(data)) => {
                 app.transcript.clear();
+                app.loaded_conversation = Some(data.conversation.clone());
+                app.active_agent = data.agent_name.clone();
                 for msg in data.conversation.into_messages() {
                     match msg.role {
                         joker::Role::User => {
