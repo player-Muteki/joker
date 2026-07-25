@@ -18,6 +18,7 @@ crossterm.workspace = true
 futures-util.workspace = true
 joker = { path = "../joker" }
 joker-config = { path = "../joker-config" }
+joker-mcp = { path = "../joker-mcp" }
 joker-provider = { path = "../joker-provider" }
 joker-tools = { path = "../joker-tools" }
 ratatui.workspace = true

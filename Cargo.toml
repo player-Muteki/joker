@@ -2,6 +2,7 @@
 members = [
     "crates/joker",
     "crates/joker-config",
+    "crates/joker-mcp",
     "crates/joker-provider",
     "crates/joker-tools",
     "crates/joker-tui",

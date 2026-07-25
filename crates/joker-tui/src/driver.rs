@@ -8,6 +8,7 @@ use joker::{
     builtin_agent_profiles, PolicyFuture, RulePattern, SummaryContextBuilder,
 };
 use joker_config::{ProviderSelection, RuntimeConfig};
+use joker_mcp::connect_and_discover;
 use joker_provider::{anthropic, google};
 use joker_provider::OpenAiCompatibleModel;
 use joker_tools::all_tool_registry;
@@ -39,13 +40,26 @@ impl Observer for ChannelObserver {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AgentDriver {
     runtime_config: RuntimeConfig,
     workspace: PathBuf,
     compact_pending: bool,
     permission_engine: PermissionEngine,
     active_agent: String,
+    mcp_tools: Arc<std::sync::Mutex<Vec<Arc<dyn joker::Tool>>>>,
+}
+
+impl std::fmt::Debug for AgentDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentDriver")
+            .field("runtime_config", &self.runtime_config)
+            .field("workspace", &self.workspace)
+            .field("compact_pending", &self.compact_pending)
+            .field("active_agent", &self.active_agent)
+            .field("mcp_tools", &self.mcp_tools.lock().unwrap().len())
+            .finish()
+    }
 }
 
 impl AgentDriver {
@@ -74,6 +88,7 @@ impl AgentDriver {
             compact_pending: false,
             permission_engine: engine,
             active_agent: "build".into(),
+            mcp_tools: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -127,6 +142,39 @@ impl AgentDriver {
     pub fn set_compact_pending(&mut self, pending: bool) {
         self.compact_pending = pending;
     }
+
+    /// Connect to configured MCP servers and discover their tools.
+    /// Call this once after construction, before spawning agent runs.
+    pub async fn init_mcp_servers(&self) {
+        let config = self.runtime_config.to_file_config();
+        if config.mcp_servers.is_empty() {
+            return;
+        }
+
+        let mut tools: Vec<Arc<dyn joker::Tool>> = Vec::new();
+        for (_name, server_cfg) in &config.mcp_servers {
+            if let Some(command) = &server_cfg.command {
+                let mcp_cfg = joker_mcp::McpToolConfig {
+                    command: command.clone(),
+                    args: server_cfg.args.clone(),
+                };
+                match connect_and_discover(&mcp_cfg).await {
+                    Ok((_client, adapters)) => {
+                        for adapter in adapters {
+                            tools.push(Arc::new(adapter));
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Failed to connect to MCP server {}: {e}", command);
+                    }
+                }
+            }
+        }
+
+        if let Ok(mut guard) = self.mcp_tools.lock() {
+            *guard = tools;
+        }
+    }
     fn build_agent(
         &self,
         tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
@@ -138,8 +186,16 @@ impl AgentDriver {
             .with_approval_channel(approval_channel.clone());
 
         // Use permission engine to filter tools for the active agent
-        let registry = all_tool_registry(&self.workspace)
+        let mut registry = all_tool_registry(&self.workspace)
             .map_err(|error| TuiError::Agent(error.to_string()))?;
+
+        // Add MCP tools
+        if let Ok(guard) = self.mcp_tools.lock() {
+            for tool in guard.iter() {
+                let _ = registry.insert_arc(tool.clone());
+            }
+        }
+
         let filtered = self
             .permission_engine
             .materialize_tools(&self.active_agent, &registry);

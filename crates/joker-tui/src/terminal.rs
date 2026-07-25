@@ -39,7 +39,10 @@ pub async fn run_tui(options: TuiOptions) -> Result<(), TuiError> {
 
     let mut app = App::with_config(options.runtime_config.clone());
     let workspace = std::env::current_dir()?;
-    let mut driver = AgentDriver::new(options.runtime_config, workspace);
+    let mut driver = AgentDriver::new(options.runtime_config.clone(), workspace);
+
+    // Connect to MCP servers configured in joker.toml
+    driver.init_mcp_servers().await;
 
     // Set up session store in .joker/sessions/
     let session_dir = std::env::current_dir().unwrap_or_default().join(".joker").join("sessions");

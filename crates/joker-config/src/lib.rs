@@ -164,6 +164,7 @@ impl RuntimeConfig {
             providers: BTreeMap::new(),
             default_agent: None,
             agent: BTreeMap::new(),
+            mcp_servers: BTreeMap::new(),
         }
     }
 }
@@ -253,6 +254,8 @@ pub struct FileConfig {
     pub default_agent: Option<String>,
     #[serde(default)]
     pub agent: BTreeMap<String, AgentProfileConfig>,
+    #[serde(default)]
+    pub mcp_servers: BTreeMap<String, McpServerConfig>,
 }
 
 impl FileConfig {
@@ -301,6 +304,16 @@ pub struct PermissionRuleConfig {
     pub allow: Vec<String>,
     #[serde(default)]
     pub remember_session_approvals: Option<bool>,
+}
+
+/// MCP server configuration to connect to external tool providers.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct McpServerConfig {
+    /// The command to spawn (for stdio transport).
+    pub command: Option<String>,
+    /// Arguments passed to the command.
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
