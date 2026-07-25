@@ -353,31 +353,27 @@ impl GeminiSseParser {
         self.buffer.push_str(chunk);
         let mut events = Vec::new();
 
-        loop {
-            if let Some(delim) = self.buffer.find("\n\n") {
-                let raw = self.buffer[..delim].to_string();
-                self.buffer.drain(..=delim + 1);
+        while let Some(delim) = self.buffer.find("\n\n") {
+            let raw = self.buffer[..delim].to_string();
+            self.buffer.drain(..=delim + 1);
 
-                // Gemini SSE uses `data: {...}` lines
-                for line in raw.lines() {
-                    let data = line.trim();
-                    if let Some(json_str) = data.strip_prefix("data:") {
-                        let json_str = json_str.trim();
-                        if json_str.is_empty() || json_str == "{}" {
-                            continue;
-                        }
-                        match self.parse_chunk(json_str) {
-                            Ok(Some(ev)) => events.push(ev),
-                            Ok(None) => {}
-                            Err(e) => {
-                                events.push(ParsedEvent::Error(e));
-                                return events;
-                            }
+            // Gemini SSE uses `data: {...}` lines
+            for line in raw.lines() {
+                let data = line.trim();
+                if let Some(json_str) = data.strip_prefix("data:") {
+                    let json_str = json_str.trim();
+                    if json_str.is_empty() || json_str == "{}" {
+                        continue;
+                    }
+                    match self.parse_chunk(json_str) {
+                        Ok(Some(ev)) => events.push(ev),
+                        Ok(None) => {}
+                        Err(e) => {
+                            events.push(ParsedEvent::Error(e));
+                            return events;
                         }
                     }
                 }
-            } else {
-                break;
             }
         }
 

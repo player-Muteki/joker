@@ -45,9 +45,9 @@ impl FetchUrlTool {
         } else {
             // Domain name — check if it resolves to a private IP
             if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host, 0)) {
-                addrs.filter_map(|a| match a {
-                    std::net::SocketAddr::V4(v4) => Some(std::net::IpAddr::V4(*v4.ip())),
-                    std::net::SocketAddr::V6(v6) => Some(std::net::IpAddr::V6(*v6.ip())),
+                addrs.map(|a| match a {
+                    std::net::SocketAddr::V4(v4) => std::net::IpAddr::V4(*v4.ip()),
+                    std::net::SocketAddr::V6(v6) => std::net::IpAddr::V6(*v6.ip()),
                 })
                 .any(|ip: std::net::IpAddr| {
                     match ip {

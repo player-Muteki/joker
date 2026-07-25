@@ -346,48 +346,43 @@ impl AnthropicSseParser {
         self.buffer.push_str(chunk);
         let mut events = Vec::new();
 
-        loop {
+        while let Some(delim) = self.buffer.find("\n\n") {
             // Anthropic SSE uses \n\n as event delimiter but individual lines
             // are separated by \n. Each event starts with `event: <type>` and
             // has `data: {...}`.
-            if let Some(delim) = self.buffer.find("\n\n") {
-                let raw = self.buffer[..delim].to_string();
-                self.buffer.drain(..=delim + 1); // skip past \n\n
+            let raw = self.buffer[..delim].to_string();
+            self.buffer.drain(..=delim + 1); // skip past \n\n
 
-                // Parse event type and data
-                let event_type = raw
-                    .lines()
-                    .find(|l| l.starts_with("event:"))
-                    .map(|l| l.trim_start_matches("event:").trim())
-                    .unwrap_or("");
+            // Parse event type and data
+            let event_type = raw
+                .lines()
+                .find(|l| l.starts_with("event:"))
+                .map(|l| l.trim_start_matches("event:").trim())
+                .unwrap_or("");
 
-                let data = raw
-                    .lines()
-                    .find(|l| l.starts_with("data:"))
-                    .map(|l| l.trim_start_matches("data:").trim());
+            let data = raw
+                .lines()
+                .find(|l| l.starts_with("data:"))
+                .map(|l| l.trim_start_matches("data:").trim());
 
-                // For simpler parsing, try parsing the data as JSON directly
-                // (some implementations skip the `event:` prefix)
-                let json_str = data.unwrap_or(raw.trim());
+            // For simpler parsing, try parsing the data as JSON directly
+            // (some implementations skip the `event:` prefix)
+            let json_str = data.unwrap_or(raw.trim());
 
-                if json_str.is_empty() || json_str == "{}" {
-                    continue;
+            if json_str.is_empty() || json_str == "{}" {
+                continue;
+            }
+
+            match self.parse_event(event_type, json_str) {
+                Ok(Some(parsed)) => events.push(parsed),
+                Ok(None) => {}
+                Err(e) => {
+                    events.push(ParsedEvent::Error(e));
+                    return events;
                 }
-
-                match self.parse_event(event_type, json_str) {
-                    Ok(Some(parsed)) => events.push(parsed),
-                    Ok(None) => {}
-                    Err(e) => {
-                        events.push(ParsedEvent::Error(e));
-                        return events;
-                    }
-                }
-            } else {
-                break;
             }
         }
 
-        // Flush any completed tool calls at end of chunk
         events
     }
 

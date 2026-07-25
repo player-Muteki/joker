@@ -70,13 +70,10 @@ async fn scripted_driver_completes_with_writeable_tools() {
 
     let mut completed = false;
     while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
-        match event {
-            UiEvent::RunCompleted(result) => {
-                assert!(result.is_ok(), "run failed: {result:?}");
-                completed = true;
-                break;
-            }
-            _ => {}
+        if let UiEvent::RunCompleted(result) = event {
+            assert!(result.is_ok(), "run failed: {result:?}");
+            completed = true;
+            break;
         }
     }
 

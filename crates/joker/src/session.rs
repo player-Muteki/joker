@@ -206,7 +206,7 @@ impl SessionStore for JsonlSessionStore {
         let index = self.load_index();
         Box::pin(async move {
             let mut sessions = index;
-            sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+            sessions.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
             Ok(sessions)
         })
     }
@@ -235,8 +235,6 @@ pub enum SessionError {
     #[error("session not found: {0}")]
     NotFound(String),
 }
-
-#[cfg(test)]
 
 #[cfg(test)]
 mod tests {

@@ -790,14 +790,14 @@ impl ApplyPatchTool {
                         if hunk_line.starts_with("@@ ") {
                             break; // next hunk
                         }
-                        if hunk_line.starts_with('-') {
-                            hunk_removals.push(hunk_line[1..].to_string());
-                        } else if hunk_line.starts_with('+') {
-                            hunk_additions.push(hunk_line[1..].to_string());
+                        if let Some(stripped) = hunk_line.strip_prefix('-') {
+                            hunk_removals.push(stripped.to_string());
+                        } else if let Some(stripped) = hunk_line.strip_prefix('+') {
+                            hunk_additions.push(stripped.to_string());
                         } else {
                             // Context line (space-prefixed or empty)
-                            let ctx = if hunk_line.starts_with(' ') {
-                                &hunk_line[1..]
+                            let ctx = if let Some(stripped) = hunk_line.strip_prefix(' ') {
+                                stripped
                             } else {
                                 hunk_line
                             };
