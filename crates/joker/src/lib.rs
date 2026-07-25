@@ -16,7 +16,8 @@ mod tool;
 mod web_search;
 
 pub use agent::{
-    Agent, AgentBuilder, AgentConfig, ExecutionMode, RunLimits, RunOutcome, RunRequest, ToolSet,
+    Agent, AgentBuilder, AgentConfig, AgentRuntime, ExecutionMode, Op, RetryConfig, RunLimits,
+    RunOutcome, RunRequest, ToolSet, TurnOutcome,
 };
 pub use agent_profiles::{builtin_agent_profiles, builtin_constraint_file_content};
 pub use context::{

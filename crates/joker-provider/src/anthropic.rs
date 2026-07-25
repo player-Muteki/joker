@@ -409,6 +409,7 @@ impl AnthropicSseParser {
                     self.set_usage(Some(Usage {
                         input_tokens: total_input,
                         output_tokens: usage.output_tokens.unwrap_or(0),
+                        cache_hit_tokens: 0,
                     }));
                 }
                 Ok(None)
@@ -503,6 +504,7 @@ impl AnthropicSseParser {
                     self.set_usage(Some(Usage {
                         input_tokens: total_input,
                         output_tokens: usage.output_tokens.unwrap_or(0),
+                        cache_hit_tokens: 0,
                     }));
                 }
 
@@ -538,6 +540,7 @@ impl AnthropicSseParser {
                     self.set_usage(Some(Usage {
                         input_tokens: total_input,
                         output_tokens: usage.output_tokens.unwrap_or(0),
+                        cache_hit_tokens: 0,
                     }));
                 }
                 if let Some(delta) = &event.delta

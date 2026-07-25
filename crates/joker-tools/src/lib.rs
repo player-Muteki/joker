@@ -4,9 +4,9 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process,
     sync::Arc,
 };
+use tokio::io::AsyncReadExt;
 
 pub mod fetch_url;
 pub mod glob;
@@ -217,6 +217,8 @@ impl Tool for ListFilesTool {
 
 // ── ReadFileTool ────────────────────────────────────────────────────────
 
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp", "webp", "ico"];
+
 #[derive(Clone, Debug)]
 struct ReadFileTool {
     workspace: WorkspaceTool,
@@ -228,18 +230,27 @@ impl ReadFileTool {
             workspace: WorkspaceTool::new(root),
         }
     }
+
+    fn is_image(path: &Path) -> bool {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| IMAGE_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
+            .unwrap_or(false)
+    }
 }
 
 impl Tool for ReadFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: ToolName::new("read_file"),
-            description: "Read a UTF-8 text file from the workspace.".into(),
+            description: "Read a file from the workspace. Supports text files (UTF-8) with optional line offset/limit, and image files (returned as base64 data URL).".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string" },
-                    "max_bytes": { "type": "integer", "minimum": 1, "maximum": 200000 }
+                    "max_bytes": { "type": "integer", "minimum": 1, "maximum": 200000 },
+                    "offset": { "type": "integer", "minimum": 1, "description": "1-based line number to start reading from." },
+                    "limit": { "type": "integer", "minimum": 1, "description": "Maximum number of lines to return." }
                 },
                 "required": ["path"]
             }),
@@ -257,18 +268,79 @@ impl Tool for ReadFileTool {
         Box::pin(async move {
             let args = parse_args::<ReadFileArgs>(invocation.arguments)?;
             let path = self.workspace.resolve_read(&args.path)?;
+
+            // Check if file is an image
+            if Self::is_image(&path) {
+                let bytes = fs::read(&path)
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                let b64 = base64::Engine::encode(
+                    &base64::engine::general_purpose::STANDARD,
+                    &bytes,
+                );
+                let ext = path.extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("png")
+                    .to_lowercase();
+                let data_url = format!("data:image/{ext};base64,{b64}");
+                return Ok(ToolOutput::new(json!({
+                    "path": args.path,
+                    "content": data_url,
+                    "mime": format!("image/{ext}"),
+                    "size": bytes.len(),
+                })));
+            }
+
+            // Text file: read content
             let content = fs::read_to_string(&path)
                 .map_err(|error| ToolError::Execution(error.to_string()))?;
-            let max_bytes = args.max_bytes.unwrap_or(64_000).min(200_000);
-            let truncated = content.len() > max_bytes;
-            let text = if truncated {
-                truncate_at_char_boundary(&content, max_bytes).to_string()
+
+            // Detect BOM and strip for processing, but remember it
+            let (bom, text) = if let Some(stripped) = content.strip_prefix('\u{FEFF}') {
+                ("\u{FEFF}", stripped)
             } else {
-                content
+                ("", content.as_str())
             };
+
+            let max_bytes = args.max_bytes.unwrap_or(64_000).min(200_000);
+            let line_ending = detect_line_ending(text);
+
+            // Apply offset/limit (1-based line numbers)
+            let lines: Vec<&str> = text.lines().collect();
+            let total_lines = lines.len();
+            let start_line = args.offset.unwrap_or(1).saturating_sub(1);
+            let end_line = args.limit.map(|limit| start_line + limit).unwrap_or(total_lines);
+            let selected = if start_line > 0 || end_line < total_lines {
+                if start_line >= total_lines {
+                    // offset past end: return empty but indicate total
+                    return Ok(ToolOutput::new(json!({
+                        "path": args.path,
+                        "content": String::new(),
+                        "line_count": total_lines,
+                        "offset": args.offset.unwrap_or(1),
+                        "limit": args.limit,
+                        "truncated": false,
+                    })));
+                }
+                lines[start_line..end_line.min(total_lines)].join(line_ending)
+                    + if end_line < total_lines { "\n... (showing lines {}-{} of {})" } else { "" }
+            } else {
+                text.to_string()
+            };
+
+            let truncated = selected.len() > max_bytes;
+            let text_out = if truncated {
+                let t = truncate_at_char_boundary(&selected, max_bytes).to_string();
+                if bom.is_empty() { t } else { format!("{bom}{t}") }
+            } else {
+                if bom.is_empty() { selected } else { format!("{bom}{selected}") }
+            };
+
             Ok(ToolOutput::new(json!({
                 "path": args.path,
-                "content": text,
+                "content": text_out,
+                "line_count": total_lines,
+                "offset": args.offset.unwrap_or(1),
+                "limit": args.limit,
                 "truncated": truncated,
             })))
         })
@@ -294,13 +366,16 @@ impl Tool for GrepTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: ToolName::new("grep"),
-            description: "Search UTF-8 workspace files for a substring.".into(),
+            description: "Search workspace files for a pattern. Uses ripgrep if available, with fallback to a pure-Rust implementation.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "query": { "type": "string" },
                     "path": { "type": "string" },
-                    "max_matches": { "type": "integer", "minimum": 1, "maximum": 200 }
+                    "max_matches": { "type": "integer", "minimum": 1, "maximum": 200 },
+                    "context_lines": { "type": "integer", "minimum": 0, "maximum": 10, "description": "Number of surrounding context lines to include before and after each match." },
+                    "include": { "type": "string", "description": "Glob pattern for files to include (e.g. '*.rs')." },
+                    "exclude": { "type": "string", "description": "Glob pattern for files to exclude (e.g. '*.generated.*')." }
                 },
                 "required": ["query"]
             }),
@@ -315,59 +390,204 @@ impl Tool for GrepTool {
     }
 
     fn call(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
+        let root = self.workspace.root.clone();
         Box::pin(async move {
             let args = parse_args::<GrepArgs>(invocation.arguments)?;
             if args.query.is_empty() {
                 return Err(ToolError::InvalidArguments("query cannot be empty".into()));
             }
-            let root = self
-                .workspace
-                .resolve_read(args.path.as_deref().unwrap_or("."))?;
-            let max_matches = args.max_matches.unwrap_or(50).min(200);
-            let mut matches = Vec::new();
-            grep_path(&root, &root, &args.query, max_matches, &mut matches)?;
+
+            // Try ripgrep first
+            let mut result = try_ripgrep(&root, &args).await?;
+
+            // If ripgrep returned an error (not available, etc), fall back
+            if result.as_ref().is_none_or(|v| v.is_empty()) {
+                result = Some(grep_fallback(&root, &args)?);
+            }
+
+            let matches = result.unwrap_or_default();
             Ok(ToolOutput::new(json!({ "matches": matches })))
         })
     }
 }
 
-fn grep_path(
+/// Attempt to use ripgrep (`rg`) for a search. Returns None if rg is not available.
+async fn try_ripgrep(root: &Path, args: &GrepArgs) -> Result<Option<Vec<Value>>, ToolError> {
+    // Check if rg is available
+    let rg_check = tokio::process::Command::new("rg")
+        .arg("--version")
+        .output()
+        .await;
+    if rg_check.is_err() {
+        return Ok(None);
+    }
+
+    let mut cmd = tokio::process::Command::new("rg");
+    cmd.arg("--json")
+        .arg("--no-heading")
+        .arg("--line-number")
+        .arg("-s") // case-sensitive
+        .current_dir(root);
+
+    // Add context lines
+    if let Some(ctx) = args.context_lines {
+        cmd.arg("-C").arg(ctx.to_string());
+    }
+
+    // Add include/exclude globs
+    if let Some(include) = &args.include {
+        cmd.arg("--glob").arg(include);
+    }
+    if let Some(exclude) = &args.exclude {
+        cmd.arg("--glob").arg(format!("!{exclude}"));
+    }
+
+    // Search path
+    let search_path = args.path.as_deref().unwrap_or(".");
+    cmd.arg(&args.query).arg(search_path);
+
+    let output = cmd.output().await
+        .map_err(|e| ToolError::Execution(format!("rg execution: {e}")))?;
+
+    if !output.status.success() && !output.stderr.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("not found") || stderr.contains("no such") {
+            return Ok(None);
+        }
+    }
+
+    let max_matches = args.max_matches.unwrap_or(50).min(200);
+    let mut matches: Vec<Value> = Vec::new();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse rg JSON output
+    for line in stdout.lines() {
+        if matches.len() >= max_matches {
+            break;
+        }
+        if let Ok(parsed) = serde_json::from_str::<Value>(line) {
+            let typ = parsed["type"].as_str().unwrap_or("");
+            if typ == "match" {
+                let data = &parsed["data"];
+                let path = data["path"]["text"].as_str().unwrap_or(search_path);
+                let line_num = data["line_number"].as_u64().unwrap_or(0);
+                let text = data["lines"]["text"].as_str().unwrap_or("").trim();
+                matches.push(json!({
+                    "path": path,
+                    "line": line_num,
+                    "text": text,
+                }));
+            }
+        }
+    }
+
+    Ok(Some(matches))
+}
+
+/// Pure-Rust fallback grep with context_lines, include/exclude support.
+fn grep_fallback(root: &Path, args: &GrepArgs) -> Result<Vec<Value>, ToolError> {
+    let max_matches = args.max_matches.unwrap_or(50).min(200);
+    let context_lines = args.context_lines.unwrap_or(0);
+
+    let include_glob = args.include.as_ref()
+        .map(|p| ::glob::Pattern::new(p))
+        .and_then(|r| r.ok());
+    let exclude_glob = args.exclude.as_ref()
+        .map(|p| ::glob::Pattern::new(p))
+        .and_then(|r| r.ok());
+
+    let start_path = if let Some(ref path) = args.path {
+        root.join(path.trim_start_matches('/'))
+    } else {
+        root.to_path_buf()
+    };
+
+    let mut matches = Vec::new();
+    grep_path_with_context(
+        root,
+        &start_path,
+        &args.query,
+        max_matches,
+        context_lines,
+        include_glob.as_ref(),
+        exclude_glob.as_ref(),
+        &mut matches,
+    )?;
+    Ok(matches)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn grep_path_with_context(
     root: &Path,
     path: &Path,
     query: &str,
     max_matches: usize,
+    context_lines: usize,
+    include_glob: Option<&::glob::Pattern>,
+    exclude_glob: Option<&::glob::Pattern>,
     matches: &mut Vec<Value>,
 ) -> Result<(), ToolError> {
     if matches.len() >= max_matches {
         return Ok(());
     }
-    let metadata = fs::metadata(path).map_err(|error| ToolError::Execution(error.to_string()))?;
+    let metadata = fs::metadata(path).map_err(|e| ToolError::Execution(e.to_string()))?;
     if metadata.is_dir() {
-        for entry in fs::read_dir(path).map_err(|error| ToolError::Execution(error.to_string()))? {
-            let entry = entry.map_err(|error| ToolError::Execution(error.to_string()))?;
-            grep_path(root, &entry.path(), query, max_matches, matches)?;
+        for entry in fs::read_dir(path).map_err(|e| ToolError::Execution(e.to_string()))? {
+            let entry = entry.map_err(|e| ToolError::Execution(e.to_string()))?;
+            grep_path_with_context(
+                root, &entry.path(), query, max_matches, context_lines,
+                include_glob, exclude_glob, matches,
+            )?;
             if matches.len() >= max_matches {
                 break;
             }
         }
         return Ok(());
     }
+
     if metadata.len() > 1_000_000 {
         return Ok(());
     }
+
+    // Apply include/exclude filters
+    let rel_path = path.strip_prefix(root).unwrap_or(path);
+    if let Some(inc) = include_glob
+        && !inc.matches_path(rel_path)
+    {
+        return Ok(());
+    }
+    if let Some(exc) = exclude_glob
+        && exc.matches_path(rel_path)
+    {
+        return Ok(());
+    }
+
     let Ok(content) = fs::read_to_string(path) else {
         return Ok(());
     };
-    for (index, line) in content.lines().enumerate() {
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+
+    for (idx, line) in lines.iter().enumerate() {
+        if matches.len() >= max_matches {
+            break;
+        }
         if line.contains(query) {
-            matches.push(json!({
-                "path": path.strip_prefix(root).unwrap_or(path).to_string_lossy(),
-                "line": index + 1,
-                "text": line,
-            }));
-            if matches.len() >= max_matches {
-                break;
+            let ctx_start = idx.saturating_sub(context_lines);
+            let ctx_end = (idx + 1 + context_lines).min(total);
+
+            let mut context: Vec<String> = Vec::new();
+            for (ci, line) in lines.iter().enumerate().take(ctx_end).skip(ctx_start) {
+                let prefix = if ci == idx { ">" } else { " " };
+                context.push(format!("{prefix}{line}"));
             }
+
+            matches.push(json!({
+                "path": rel_path.to_string_lossy(),
+                "line": idx + 1,
+                "text": line,
+                "context": context,
+            }));
         }
     }
     Ok(())
@@ -667,7 +887,9 @@ impl Tool for ShellTool {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "command": { "type": "string", "description": "Shell command to execute." }
+                    "command": { "type": "string", "description": "Shell command to execute." },
+                    "bg": { "type": "boolean", "description": "Run in background. Returns PID immediately." },
+                    "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 600, "description": "Timeout in seconds. Default: 120." }
                 },
                 "required": ["command"]
             }),
@@ -682,6 +904,7 @@ impl Tool for ShellTool {
     }
 
     fn call(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
+        let root = self.workspace.root.clone();
         Box::pin(async move {
             let args = parse_args::<ShellArgs>(invocation.arguments)?;
             let command_str = args.command.trim().to_string();
@@ -690,35 +913,165 @@ impl Tool for ShellTool {
                 return Err(ToolError::InvalidArguments("command cannot be empty".into()));
             }
 
-            // Run safety analysis
             let safety_warnings = Self::analyse_command_safety(&command_str);
 
-            // Execute the command via shell
-            let output = process::Command::new("sh")
-                .arg("-c")
-                .arg(&command_str)
-                .current_dir(&self.workspace.root)
-                .output()
-                .map_err(|error| ToolError::Execution(format!("command failed: {error}")))?;
-
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let exit_code = output.status.code();
-
-            let mut result = json!({
-                "stdout": truncate_large_output(&stdout, 32_000),
-                "stderr": truncate_large_output(&stderr, 8_000),
-                "exit_code": exit_code,
-                "success": output.status.success(),
-            });
-
-            if !safety_warnings.is_empty() {
-                result["safety_warnings"] = json!(safety_warnings);
+            // Background mode — spawn and return immediately
+            if args.bg.unwrap_or(false) {
+                let child = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&command_str)
+                    .current_dir(&root)
+                    .spawn()
+                    .map_err(|e| ToolError::Execution(format!("bg spawn failed: {e}")))?;
+                let mut res = json!({
+                    "bg": true,
+                    "pid": child.id(),
+                    "command": command_str,
+                });
+                if !safety_warnings.is_empty() {
+                    res["safety_warnings"] = json!(safety_warnings);
+                }
+                return Ok(ToolOutput::new(res));
             }
 
-            Ok(ToolOutput::new(result))
+            // Foreground execution with tokio, streaming output, and ring buffer
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.arg("-c")
+                .arg(&command_str)
+                .current_dir(&root)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| ToolError::Execution(format!("spawn failed: {e}")))?;
+
+            // Take stdout/stderr before waiting (so we can still read on timeout)
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+
+            // Spawn tasks to read output asynchronously
+            let stdout_task = tokio::spawn(async move {
+                let mut buf = Vec::new();
+                if let Some(mut r) = stdout {
+                    let _ = r.read_to_end(&mut buf).await;
+                }
+                buf
+            });
+            let stderr_task = tokio::spawn(async move {
+                let mut buf = Vec::new();
+                if let Some(mut r) = stderr {
+                    let _ = r.read_to_end(&mut buf).await;
+                }
+                buf
+            });
+
+            let timeout_dur = args
+                .timeout_secs
+                .map(std::time::Duration::from_secs)
+                .unwrap_or(std::time::Duration::from_secs(120));
+
+            let result = tokio::time::timeout(timeout_dur, child.wait()).await;
+
+            let (status, raw_stdout, raw_stderr) = match result {
+                Ok(Ok(status)) => {
+                    // Child exited — pipes are closed, read tasks will finish
+                    let out = stdout_task.await.unwrap_or_default();
+                    let err = stderr_task.await.unwrap_or_default();
+                    (Some(status), out, err)
+                }
+                Ok(Err(e)) => return Err(ToolError::Execution(format!("command failed: {e}"))),
+                Err(_) => {
+                    // Timeout — kill the child process
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    let out = stdout_task.await.unwrap_or_default();
+                    let err = stderr_task.await.unwrap_or_default();
+                    let (stdout_txt, stderr_txt, spill_path) =
+                        build_ring_buffer(&out, &err, 64_000, 8_000);
+                    let mut res = json!({
+                        "stdout": stdout_txt,
+                        "stderr": stderr_txt,
+                        "exit_code": null,
+                        "success": false,
+                    });
+                    if let Some(spill) = spill_path {
+                        res["spill_path"] = json!(spill.to_string_lossy());
+                    }
+                    if !safety_warnings.is_empty() {
+                        res["safety_warnings"] = json!(safety_warnings);
+                    }
+                    return Ok(ToolOutput::new(res));
+                }
+            };
+
+            let exit_code = status.as_ref().and_then(|s| s.code());
+            let success = status.is_some_and(|s| s.success());
+
+            let (stdout_txt, stderr_txt, spill_path) =
+                build_ring_buffer(&raw_stdout, &raw_stderr, 64_000, 8_000);
+
+            let mut res = json!({
+                "stdout": stdout_txt,
+                "stderr": stderr_txt,
+                "exit_code": exit_code,
+                "success": success,
+            });
+
+            if let Some(spill) = spill_path {
+                res["spill_path"] = json!(spill.to_string_lossy());
+            }
+            if !safety_warnings.is_empty() {
+                res["safety_warnings"] = json!(safety_warnings);
+            }
+            Ok(ToolOutput::new(res))
         })
     }
+}
+
+/// Apply a ring buffer to command output: keep up to `max_stdout`/`max_stderr`
+/// bytes, spill the excess to a temp file.
+fn build_ring_buffer(
+    stdout: &[u8],
+    stderr: &[u8],
+    max_stdout: usize,
+    max_stderr: usize,
+) -> (String, String, Option<PathBuf>) {
+    let stdout_str = String::from_utf8_lossy(stdout);
+    let stderr_str = String::from_utf8_lossy(stderr);
+
+    let mut spill_path = None;
+
+    let stdout_result = if stdout_str.len() > max_stdout {
+        let spill_dir = std::env::temp_dir().join("joker-shell-spill");
+        let _ = fs::create_dir_all(&spill_dir);
+        let path = spill_dir.join(format!("stdout-{}", std::process::id()));
+        let _ = fs::write(&path, stdout_str.as_ref());
+
+        let truncated =
+            truncate_at_char_boundary(stdout_str.as_ref(), max_stdout).to_string();
+        spill_path = Some(path);
+        format!(
+            "{}\n... [output truncated, {} bytes total]",
+            truncated,
+            stdout_str.len()
+        )
+    } else {
+        stdout_str.to_string()
+    };
+
+    let stderr_result = if stderr_str.len() > max_stderr {
+        let t = truncate_at_char_boundary(stderr_str.as_ref(), max_stderr).to_string();
+        format!(
+            "{}\n... [stderr truncated, {} bytes total]",
+            t,
+            stderr_str.len()
+        )
+    } else {
+        stderr_str.to_string()
+    };
+
+    (stdout_result, stderr_result, spill_path)
 }
 
 // ── ApplyPatchTool ─────────────────────────────────────────────────────
@@ -938,15 +1291,6 @@ fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> &str {
     &text[..boundary]
 }
 
-fn truncate_large_output(text: &str, max_bytes: usize) -> String {
-    if text.len() <= max_bytes {
-        return text.to_string();
-    }
-    let mut result = truncate_at_char_boundary(text, max_bytes).to_string();
-    result.push_str(&format!("\n... [truncated {} bytes]", text.len() - max_bytes));
-    result
-}
-
 // ── Argument types ──────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -958,6 +1302,8 @@ struct PathArgs {
 struct ReadFileArgs {
     path: String,
     max_bytes: Option<usize>,
+    offset: Option<usize>,
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -965,6 +1311,9 @@ struct GrepArgs {
     query: String,
     path: Option<String>,
     max_matches: Option<usize>,
+    context_lines: Option<usize>,
+    include: Option<String>,
+    exclude: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -984,6 +1333,8 @@ struct EditFileArgs {
 #[derive(Debug, Deserialize)]
 struct ShellArgs {
     command: String,
+    bg: Option<bool>,
+    timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

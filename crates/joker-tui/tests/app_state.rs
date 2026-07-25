@@ -43,14 +43,14 @@ fn unicode_editing_uses_char_boundaries() {
 }
 
 #[test]
-fn applies_model_delta_to_streaming_assistant_item() {
+fn applies_text_delta_to_streaming_assistant_item() {
     let mut app = App::new();
 
     app.apply_ui_event(UiEvent::Agent(joker::Event::ModelStarted));
-    app.apply_ui_event(UiEvent::Agent(joker::Event::ModelDelta {
+    app.apply_ui_event(UiEvent::Agent(joker::Event::TextDelta {
         delta: "hel".into(),
     }));
-    app.apply_ui_event(UiEvent::Agent(joker::Event::ModelDelta {
+    app.apply_ui_event(UiEvent::Agent(joker::Event::TextDelta {
         delta: "lo".into(),
     }));
     app.apply_ui_event(UiEvent::Agent(joker::Event::ModelFinished {

@@ -156,7 +156,7 @@ Provider 配置当前只允许单一入口：
   → 进入 /model 后自动加载可用模型
 ```
 
-**这里需要把 OpenCode 的全量实现策略照搬并翻译为 Rust 实现，代码量大一点也没关系。**
+**这里需要把 OpenCode 的全量实现策略照搬并翻译为 Rust 实现，代码量大一点也没关系。注意模型列表应该根据各个供应商的URL与API自动识别并做好路由而非预设！**
 
 **参考实现要点：**
 
@@ -689,49 +689,3 @@ impl AgentProfile {
 └── skills/                  # 用户自定义 skills
 ```
 
-## 9. 实现进度
-
-### 已完成
-
-| 模块 | 状态 | 说明 |
-| --- | --- | --- |
-| **核心 loop** | ✅ | `Agent::run()` 双层循环（tool call + follow-up），Op/Event 分离 |
-| **PermissionEngine** | ✅ | 6 层优先级评估（Hard → Disabled → AutoAccept → Session → Ask → Default），`materialize_tools` 过滤 |
-| **3 个内置 Agent** | ✅ | plan（硬只读）、build（默认询问）、yolo（全自动），约束文件 `.joker/agents/{name}_agent.md` |
-| **Agent 自定义** | ✅ | `AgentPermission` + `PermissionSetting`（Ask/AutoAccept/Disabled），hard_permission 不可绕过 |
-| **Tool trait** | ✅ | `Tool` trait + `ToolRegistry` + `ToolAnnotations`（mutating, capabilities） |
-| **11 个工具** | ✅ | read_file, write_file, edit_file, apply_patch, shell, grep, glob, web_search, fetch_url, memory_read/write, todo_write |
-| **公开 API** | ✅ | 每个工具模块暴露独立 `pub async fn`，Tool impl 为薄包装 |
-| **Provider 层** | ✅ | OpenAI 兼容 + Anthropic + Google，统一 `Model` trait |
-| **凭证存储** | ✅ | `CredentialStore` → `~/.joker/auth.json`（0o600） |
-| **上下文压缩** | ✅ | 4 级策略：Micro（文件去重）→ Soft（通知）→ Compact（LLM 摘要）→ Force（截断） |
-| **PrefixedContextBuilder** | ✅ | 装饰器模式，注入系统提示 |
-| **assemble_system_prompt** | ✅ | 项目上下文 + Agent 约束文件 + 记忆 → 系统提示 |
-| **SummaryContextBuilder** | ✅ | 摘要压缩，保留最近 N 条消息 |
-| **CompactingContextBuilder** | ✅ | 基于 token 阈值自动触发压缩策略 |
-| **micro_dedup_messages** | ✅ | 重复文件读取替换为 stub |
-| **SlashCommand trait** | ✅ | 16 个命令，统一 `info()`/`execute()`/`complete()` 接口 |
-| **CommandRegistry** | ✅ | LazyLock 全局注册，SkimMatcherV2 模糊匹配 |
-| **Tab 补全** | ✅ | 前缀匹配 → 模糊匹配，子命令递归补全 |
-| **MCP 集成** | ✅ | 独立 `joker-mcp` crate，JSON-RPC 2.0，stdio transport，工具发现 |
-| **会话持久化** | ✅ | `JsonlSessionStore`, `/sessions list / load / delete` |
-| **会话自动保存** | ✅ | `RunCompleted` → `save_current_session` |
-| **SessionStore trait** | ✅ | `list()`, `load()`, `save()`, `delete()` |
-| **约束文件生成** | ✅ | 首次运行时写入 `plan_agent.md`, `build_agent.md`, `yolo_agent.md` |
-| **E2E 测试** | ✅ | 6 个集成测试：golden path、agent 切换、权限引擎、compact、并发、stop reason |
-| **零 clippy warning** | ✅ | `cargo clippy --workspace --all-targets` 无 warning |
-| **release build** | ✅ | `cargo build --release` 通过 |
-
-### 待后续扩展
-
-| 模块 | 状态 | 说明 |
-| --- | --- | --- |
-| DeepSeek 特定处理 | 🔜 | thinking/reasoning 协议差异（当前 OpenAiCompatible 通用处理） |
-| Skill 系统 | 🔜 | 自定义 prompt 注入，文件路径门控 |
-| Hook 系统 | 🔜 | 会话/回合/工具生命周期钩子 |
-| 子 Agent 派生 | 🔜 | 能力交集（AND）原则，嵌套深度限制 |
-| CLI one-shot | 🔜 | 非 TUI 模式 |
-| SSE/HTTP MCP Transport | 🔜 | 当前仅 stdio |
-| LLM 摘要压缩 | 🔜 | 当前为启发式摘要（`summarize_conversation`），需替换为 LLM 调用 |
-| 模型自动识别 | 🔜 | `/v1/models` 端点检测 |
-| Plugin 系统 | 🔜 | 事件钩子 + 自定义工具加载 |

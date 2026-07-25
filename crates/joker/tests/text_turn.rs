@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use joker::{Agent, Content, RunRequest, ScriptedModel, ScriptedStep, StopReason};
+use joker::{Agent, AgentConfig, Content, RetryConfig, RunRequest, ScriptedModel, ScriptedStep, StopReason};
 
 #[tokio::test]
 async fn text_turn_appends_user_and_final_assistant_message() {
@@ -30,7 +30,13 @@ async fn text_turn_appends_user_and_final_assistant_message() {
 async fn model_error_terminates_run() {
     let model = Arc::new(ScriptedModel::new([ScriptedStep::Error("network".into())]))
         as Arc<dyn joker::Model>;
-    let agent = Agent::new(model);
+    let agent = Agent::new(model).with_config(AgentConfig {
+        retry: RetryConfig {
+            max_stream_retries: 0,
+            ..RetryConfig::default()
+        },
+        ..AgentConfig::default()
+    });
 
     let error = agent.run(RunRequest::new("hi")).await.unwrap_err();
 

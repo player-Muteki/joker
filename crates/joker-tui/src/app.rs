@@ -513,26 +513,82 @@ impl App {
 
     fn apply_agent_event(&mut self, event: joker::Event) {
         match event {
+            // ── Lifecycle ─────────────────────────────────────────
             joker::Event::RunStarted => {
                 self.status = "Running".into();
             }
+            joker::Event::RunFinished { .. } => {
+                self.status = "Finishing".into();
+            }
+
+            // ── Turn boundaries ────────────────────────────────────
+            joker::Event::TurnStarted { .. } => {
+                self.status = "Turn starting".into();
+            }
+            joker::Event::TurnDone { .. } => {
+                self.status = "Turn complete".into();
+            }
+
+            // ── Model output ───────────────────────────────────────
             joker::Event::ModelStarted => {
                 self.status = "Model streaming".into();
                 self.ensure_streaming_assistant();
             }
+            #[allow(deprecated)]
             joker::Event::ModelDelta { delta } => {
+                self.push_assistant_delta(&delta);
+            }
+            joker::Event::TextDelta { delta } => {
+                self.push_assistant_delta(&delta);
+            }
+            joker::Event::ReasoningDelta { delta } => {
+                // Currently append to assistant text; can separate later
                 self.push_assistant_delta(&delta);
             }
             joker::Event::ModelFinished { .. } => {
                 self.finish_streaming_assistant();
             }
-            joker::Event::ToolStarted { call_id, name } => {
-                self.status = format!("Tool {name} running");
+
+            // ── Tool lifecycle ─────────────────────────────────────
+            joker::Event::ToolDispatch {
+                call_id,
+                tool_name,
+                ..
+            } => {
+                self.status = format!("Tool {tool_name} dispatched");
                 self.transcript.push(TranscriptItem::Tool {
                     call_id,
-                    name,
+                    name: tool_name,
                     state: ToolState::Running,
                 });
+            }
+            joker::Event::ToolStarted { call_id, name } => {
+                self.status = format!("Tool {name} running");
+                // Only add a transcript item if ToolDispatch wasn't emitted
+                if !self.transcript.iter().any(|item| {
+                    matches!(item, TranscriptItem::Tool { call_id: id, .. } if id == &call_id)
+                }) {
+                    self.transcript.push(TranscriptItem::Tool {
+                        call_id,
+                        name,
+                        state: ToolState::Running,
+                    });
+                }
+            }
+            joker::Event::ToolDelta { .. } => {}
+            joker::Event::ToolProgress {
+                call_id,
+                partial_output,
+            } => {
+                if let Some(item) = self.transcript.iter_mut().rev().find(|item| {
+                    matches!(item, TranscriptItem::Tool { call_id: id, .. } if id == &call_id)
+                }) {
+                    *item = TranscriptItem::Tool {
+                        call_id,
+                        name: String::new(),
+                        state: ToolState::Progress(partial_output),
+                    };
+                }
             }
             joker::Event::ToolFinished { result } => {
                 self.status = format!("Tool {} finished", result.name);
@@ -550,13 +606,59 @@ impl App {
                     };
                 }
             }
+
+            // ── Token usage ────────────────────────────────────────
+            joker::Event::Usage {
+                input_tokens,
+                output_tokens,
+                cache_hit_tokens,
+            } => {
+                self.status = format!("Tokens: {input_tokens}↑ {output_tokens}↓ cache:{cache_hit_tokens}");
+                self.transcript.push(TranscriptItem::Status(format!(
+                    "Usage: {input_tokens} in / {output_tokens} out (cache hit: {cache_hit_tokens})"
+                )));
+            }
+
+            // ── Compaction ─────────────────────────────────────────
+            joker::Event::CompactionStarted {
+                trigger,
+                current_tokens,
+                threshold,
+            } => {
+                self.transcript.push(TranscriptItem::Status(format!(
+                    "Compaction triggered: {trigger} ({current_tokens}/{threshold} tokens)"
+                )));
+            }
+            joker::Event::CompactionDone {
+                tokens_before,
+                tokens_after,
+            } => {
+                let saved = tokens_before.saturating_sub(tokens_after);
+                self.transcript.push(TranscriptItem::Status(format!(
+                    "Compaction done: {tokens_before} → {tokens_after} (saved {saved} tokens)"
+                )));
+            }
+
+            // ── Agent / model switching ────────────────────────────
+            joker::Event::AgentSwitched { from, to } => {
+                self.active_agent = to.clone();
+                self.transcript.push(TranscriptItem::Status(format!(
+                    "Switched agent: {from} → {to}"
+                )));
+            }
+            joker::Event::ModelSwitched { from, to } => {
+                self.transcript.push(TranscriptItem::Status(format!(
+                    "Switched model: {from} → {to}"
+                )));
+            }
+
+            // ── Limits ─────────────────────────────────────────────
             joker::Event::LimitReached { reason } => {
                 self.transcript
                     .push(TranscriptItem::Status(format!("Limit reached: {reason}")));
             }
-            joker::Event::RunFinished { .. } => {
-                self.status = "Finishing".into();
-            }
+
+            // ── Permission ─────────────────────────────────────────
             joker::Event::PermissionRequested {
                 request_id,
                 tool_name,
@@ -592,7 +694,26 @@ impl App {
                     });
                 }
             }
-            joker::Event::ToolDelta { .. } => {}
+
+            // ── Error / retry ──────────────────────────────────────
+            joker::Event::Error {
+                kind,
+                message,
+                recoverable,
+            } => {
+                let level = if recoverable { "Warning" } else { "Error" };
+                self.transcript
+                    .push(TranscriptItem::Status(format!("{level} [{kind}]: {message}")));
+            }
+            joker::Event::Retrying {
+                attempt,
+                max_attempts,
+                reason,
+            } => {
+                self.transcript.push(TranscriptItem::Status(format!(
+                    "Retry {attempt}/{max_attempts}: {reason}"
+                )));
+            }
             _ => {}
         }
     }
@@ -678,6 +799,7 @@ pub enum TranscriptItem {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolState {
     Running,
+    Progress(String),
     Done(String),
     Error(String),
 }

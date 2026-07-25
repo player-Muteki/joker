@@ -5,13 +5,10 @@ use joker::{
     PermissionPolicy, PermissionRule, PermissionSetting, RunRequest, ScriptedModel, ScriptedStep,
     SharedApprovalChannel, StopReason, ToolAnnotations, ToolDefinition, ToolDecision, ToolFn,
     ToolFuture, ToolInvocation, ToolName, ToolOutput, ToolPolicy, ToolPolicyRequest,
-    builtin_agent_profiles, PolicyFuture, RulePattern, SummaryContextBuilder,
-    PrefixedContextBuilder, assemble_system_prompt,
+    builtin_agent_profiles, PolicyFuture, RulePattern, PrefixedContextBuilder, assemble_system_prompt,
 };
 use joker_config::{ProviderSelection, RuntimeConfig};
 use joker_mcp::connect_and_discover;
-use joker_provider::{anthropic, google};
-use joker_provider::OpenAiCompatibleModel;
 use joker_tools::all_tool_registry;
 use serde_json::json;
 use tokio::task::JoinHandle;
@@ -193,8 +190,9 @@ impl AgentDriver {
         approval_channel: SharedApprovalChannel,
     ) -> Result<Agent, TuiError> {
         let model = self.build_model()?;
+        let observer = Arc::new(ChannelObserver::new(tx.clone()));
         let mut agent = Agent::new(model)
-            .with_observer(Arc::new(ChannelObserver::new(tx)))
+            .with_observer(observer.clone())
             .with_approval_channel(approval_channel.clone());
 
         // Use permission engine to filter tools for the active agent
@@ -242,7 +240,10 @@ impl AgentDriver {
         // Wrap context builder with system prompt from agent profile
         let system_prompt = assemble_system_prompt(&self.active_agent, None, None);
         let inner: Box<dyn joker::ContextBuilder> = if self.compact_pending {
-            Box::new(SummaryContextBuilder::new(20, Box::new(joker::PassthroughContextBuilder)))
+            Box::new(
+                joker::CompactingContextBuilder::new(Box::new(joker::PassthroughContextBuilder))
+                    .with_observer(observer),
+            )
         } else {
             Box::new(joker::PassthroughContextBuilder)
         };
@@ -259,34 +260,14 @@ impl AgentDriver {
                 Ok(Arc::new(ScriptedModel::new(self.scripted_steps()))
                     as Arc<dyn joker::Model>)
             }
-            ProviderSelection::OpenAiCompatible(config) => Ok(Arc::new(
-                OpenAiCompatibleModel::new(config.clone())
-                    .map_err(|error| TuiError::Agent(error.to_string()))?,
-            )
-                as Arc<dyn joker::Model>),
-            ProviderSelection::Anthropic { model, api_key } => {
-                let cfg = anthropic::AnthropicConfig {
-                    base_url: anthropic::DEFAULT_BASE_URL.into(),
-                    model: model.clone(),
-                    api_key: api_key.clone().unwrap_or_default(),
+            ProviderSelection::Route(route) => {
+                let model = if route.default_model.is_empty() {
+                    "model"
+                } else {
+                    &route.default_model
                 };
-                Ok(Arc::new(
-                    anthropic::AnthropicModel::new(cfg)
-                        .map_err(|e| TuiError::Agent(e.to_string()))?,
-                )
-                    as Arc<dyn joker::Model>)
-            }
-            ProviderSelection::Google { model, api_key } => {
-                let cfg = google::GoogleConfig {
-                    base_url: google::DEFAULT_BASE_URL.into(),
-                    model: model.clone(),
-                    api_key: api_key.clone().unwrap_or_default(),
-                };
-                Ok(Arc::new(
-                    google::GoogleModel::new(cfg)
-                        .map_err(|e| TuiError::Agent(e.to_string()))?,
-                )
-                    as Arc<dyn joker::Model>)
+                route.build_model_for(model)
+                    .map_err(|e| TuiError::Agent(e))
             }
         }
     }
@@ -317,9 +298,21 @@ fn streaming_text_events(text: &str) -> Vec<ModelResponseEvent> {
 }
 
 /// Compose two `ToolPolicy` impls: first's Deny takes priority, then delegates to second.
+/// Also downgrades Allow→Ask for shell commands with redirect/pipeline operators.
 struct ChainPolicy {
     first: Arc<dyn ToolPolicy>,
     second: Arc<dyn ToolPolicy>,
+}
+
+/// Shell operators that trigger `Allow` → `Ask` downgrade.
+const SHELL_REDIRECT_PATTERNS: &[&str] = &["|", ">", "$(", "`"];
+
+impl ChainPolicy {
+    fn has_redirect_operators(command: &str) -> bool {
+        SHELL_REDIRECT_PATTERNS
+            .iter()
+            .any(|op| command.contains(op))
+    }
 }
 
 impl ToolPolicy for ChainPolicy {
@@ -329,7 +322,30 @@ impl ToolPolicy for ChainPolicy {
             let first_decision = self.first.evaluate(request).await?;
             match first_decision {
                 ToolDecision::Deny { .. } => Ok(first_decision),
-                _ => self.second.evaluate(request2).await,
+                _ => {
+                    // Check for shell redirect downgrade
+                    if first_decision == ToolDecision::Allow
+                        && request2.invocation.name.as_str() == "shell"
+                    {
+                        if let Some(cmd) = request2
+                            .invocation
+                            .arguments
+                            .get("command")
+                            .and_then(|v| v.as_str())
+                        {
+                            if Self::has_redirect_operators(cmd) {
+                                return Ok(ToolDecision::Ask {
+                                    request_id: "redirect-downgrade".into(),
+                                    reason: format!(
+                                        "shell command contains redirect/pipeline operators ({:?})",
+                                        SHELL_REDIRECT_PATTERNS
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    self.second.evaluate(request2).await
+                }
             }
         })
     }
@@ -364,6 +380,7 @@ fn agent_permission_from_config(
         tool_permissions: perms,
         constraint_file: agents_dir.join(format!("{name}_agent.md")),
         hard_permission: None,
+        model: None,
     }
 }
 

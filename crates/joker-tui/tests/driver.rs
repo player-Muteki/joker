@@ -31,7 +31,7 @@ async fn scripted_driver_sends_agent_events_and_completion() {
     let mut completed = false;
     while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
         match event {
-            UiEvent::Agent(joker::Event::ModelDelta { delta }) => {
+            UiEvent::Agent(joker::Event::TextDelta { delta }) => {
                 saw_delta |= delta.contains("hi");
             }
             UiEvent::RunCompleted(result) => {

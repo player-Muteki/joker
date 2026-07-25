@@ -9,6 +9,7 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use joker::SharedApprovalChannel;
+use joker_provider::CredentialSource;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -169,7 +170,7 @@ fn handle_action(
         AppAction::Quit => app.quit(),
         AppAction::Redraw => {}
         AppAction::AgentCreate { name, tool_permissions } => {
-            handle_agent_create(app, driver, &name, &tool_permissions);
+            handle_agent_create(app, driver, config_store, &name, &tool_permissions);
         }
     }
 }
@@ -185,22 +186,8 @@ fn handle_api_key_confirm(
     let _ = app.credential_store.save();
 
     // Set the API key in the runtime config so model building picks it up
-    match provider_id {
-        "anthropic" => {
-            if let joker_config::ProviderSelection::Anthropic { api_key: key, .. } = &mut app.runtime_config.provider {
-                *key = Some(api_key.to_string());
-            }
-        }
-        "google" => {
-            if let joker_config::ProviderSelection::Google { api_key: key, .. } = &mut app.runtime_config.provider {
-                *key = Some(api_key.to_string());
-            }
-        }
-        _ => {
-            if let joker_config::ProviderSelection::OpenAiCompatible(config) = &mut app.runtime_config.provider {
-                config.api_key = Some(api_key.to_string());
-            }
-        }
+    if let joker_config::ProviderSelection::Route(route) = &mut app.runtime_config.provider {
+        route.auth.credentials = CredentialSource::Value(api_key.to_string());
     }
 
     driver.set_runtime_config(app.runtime_config.clone());
@@ -212,13 +199,15 @@ fn handle_api_key_confirm(
 fn handle_agent_create(
     app: &mut App,
     driver: &mut AgentDriver,
+    config_store: &joker_config::ConfigStore,
     name: &str,
     tool_permissions: &[(String, String)],
 ) {
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use joker::{AgentPermission, PermissionSetting, ToolName};
 
     let mut perms = HashMap::new();
+    let mut file_tools = BTreeMap::new();
     for (label, tool_name) in tool_permissions {
         let setting = if label.starts_with("[Auto]") {
             PermissionSetting::AutoAccept
@@ -227,7 +216,21 @@ fn handle_agent_create(
         } else {
             PermissionSetting::Ask
         };
+        let permission_str = if label.starts_with("[Auto]") {
+            "auto-accept"
+        } else if label.starts_with("[Off]") {
+            "disabled"
+        } else {
+            "ask"
+        };
         perms.insert(ToolName::new(tool_name), setting);
+        file_tools.insert(
+            tool_name.clone(),
+            joker_config::ToolPermissionConfig {
+                enabled: None,
+                permission: Some(permission_str.into()),
+            },
+        );
     }
 
     let agents_dir = driver.workspace().join(".joker").join("agents");
@@ -236,12 +239,46 @@ fn handle_agent_create(
         tool_permissions: perms,
         constraint_file: agents_dir.join(format!("{name}_agent.md")),
         hard_permission: None,
+        model: None,
     };
 
     driver.permission_engine_mut().register(agent_perm);
     app.agent_names.push(name.to_string());
+
+    // Persist to joker.toml
+    if let Ok(raw) = std::fs::read_to_string(config_store.path())
+        && let Ok(mut file) = toml::from_str::<joker_config::FileConfig>(&raw)
+    {
+        file.agent.insert(
+            name.to_string(),
+            joker_config::AgentProfileConfig {
+                model: None,
+                system: None,
+                tools: file_tools,
+                permissions: joker_config::PermissionRuleConfig::default(),
+            },
+        );
+        if let Ok(raw) = toml::to_string_pretty(&file) {
+            let _ = std::fs::write(config_store.path(), raw);
+        }
+    }
+
+    // Generate constraint file
+    let constraint_path = agents_dir.join(format!("{name}_agent.md"));
+    let constraint_content = format!(
+        r##"# {name} Agent
+
+Custom agent created via /agent new.
+
+## Behavior
+- Describe what this agent should do.
+- Set expectations for tool usage and permission levels.
+"##
+    );
+    let _ = std::fs::write(&constraint_path, constraint_content);
+
     app.transcript.push(TranscriptItem::Status(format!(
-        "Agent '{name}' created and registered."
+        "Agent '{name}' created, registered, and saved to config."
     )));
 }
 

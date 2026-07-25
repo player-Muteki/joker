@@ -86,26 +86,22 @@ fn config_set(app: &mut App, key: &str, value: &str) -> CommandResult {
             Ok(())
         }
         "base_url" => match &mut app.runtime_config.provider {
-            ProviderSelection::OpenAiCompatible(provider) => {
-                provider.base_url = value.into();
+            ProviderSelection::Route(route) => {
+                route.base_url = value.into();
                 Ok(())
             }
-            ProviderSelection::Scripted { .. }
-            | ProviderSelection::Anthropic { .. }
-            | ProviderSelection::Google { .. } => Err(joker_config::ConfigError::InvalidValue(
-                "base_url only applies to OpenAI-compatible providers".into(),
+            ProviderSelection::Scripted { .. } => Err(joker_config::ConfigError::InvalidValue(
+                "base_url only applies to non-scripted providers".into(),
             )),
         },
         "api_key_env" => match &mut app.runtime_config.provider {
-            ProviderSelection::OpenAiCompatible(provider) => {
-                provider.api_key = std::env::var(value).ok();
-                provider.api_key_env = Some(value.into());
+            ProviderSelection::Route(route) => {
+                let env_name = value;
+                route.auth.credentials = joker_provider::CredentialSource::EnvVar(env_name.into());
                 Ok(())
             }
-            ProviderSelection::Scripted { .. }
-            | ProviderSelection::Anthropic { .. }
-            | ProviderSelection::Google { .. } => Err(joker_config::ConfigError::InvalidValue(
-                "api_key_env only applies to OpenAI-compatible providers".into(),
+            ProviderSelection::Scripted { .. } => Err(joker_config::ConfigError::InvalidValue(
+                "api_key_env only applies to non-scripted providers".into(),
             )),
         },
         _ => Err(joker_config::ConfigError::InvalidValue(format!(

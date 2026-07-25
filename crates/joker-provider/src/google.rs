@@ -440,6 +440,7 @@ impl GeminiSseParser {
             let usage = response.usage_metadata.as_ref().map(|u| Usage {
                 input_tokens: u.prompt_token_count.unwrap_or(0),
                 output_tokens: u.candidates_token_count.unwrap_or(0),
+                cache_hit_tokens: 0,
             });
 
             events.push(ParsedEvent::Finish {

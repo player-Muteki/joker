@@ -44,6 +44,8 @@ pub struct AgentPermission {
     /// Only meaningful when set to `Disabled` (to enforce read-only mode
     /// like plan agent) or `AutoAccept`.
     pub hard_permission: Option<PermissionSetting>,
+    /// Optional per-agent model override.
+    pub model: Option<String>,
 }
 
 /// Outcome of evaluating a tool permission.
@@ -325,6 +327,7 @@ mod tests {
             tool_permissions: perms,
             constraint_file: PathBuf::from("plan_agent.md"),
             hard_permission: Some(PermissionSetting::Disabled),
+            model: None,
         }
     }
 
@@ -339,6 +342,7 @@ mod tests {
             tool_permissions: perms,
             constraint_file: PathBuf::from("yolo_agent.md"),
             hard_permission: None,
+            model: None,
         }
     }
 
@@ -397,6 +401,7 @@ mod tests {
             tool_permissions: perms,
             constraint_file: PathBuf::from("build_agent.md"),
             hard_permission: None,
+            model: None,
         });
 
         // Should ask initially

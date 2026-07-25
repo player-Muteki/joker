@@ -47,6 +47,7 @@ fn plan_profile(agents_dir: &std::path::Path) -> AgentPermission {
         tool_permissions: perms,
         constraint_file: agents_dir.join("plan_agent.md"),
         hard_permission: Some(PermissionSetting::Disabled), // blocks all mutating tools
+        model: None,
     }
 }
 
@@ -62,6 +63,7 @@ fn build_profile(agents_dir: &std::path::Path) -> AgentPermission {
         tool_permissions: perms,
         constraint_file: agents_dir.join("build_agent.md"),
         hard_permission: None,
+        model: None,
     }
 }
 
@@ -92,6 +94,7 @@ fn yolo_profile(agents_dir: &std::path::Path) -> AgentPermission {
         tool_permissions: perms,
         constraint_file: agents_dir.join("yolo_agent.md"),
         hard_permission: None,
+        model: None,
     }
 }
 

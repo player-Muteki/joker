@@ -16,8 +16,6 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use crate::ProviderDescriptor;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenAiCompatibleConfig {
     pub provider_name: String,
@@ -122,8 +120,8 @@ impl OpenAiCompatibleModel {
 
     /// Fetch available models from the provider's `/v1/models` endpoint.
     ///
-    /// Returns model IDs sorted alphabetically. Falls back to a known model
-    /// list if the endpoint is unreachable or returns an error.
+    /// Returns model IDs sorted alphabetically. Falls back to the configured
+    /// model name if the endpoint is unreachable.
     pub async fn detect_models(&self) -> Vec<String> {
         let models_url = format!("{}/models", self.config.base_url.trim_end_matches('/'));
         match self.client.get(&models_url).send().await {
@@ -141,24 +139,12 @@ impl OpenAiCompatibleModel {
                             return ids;
                         }
                     }
-                    known_model_list(&self.config.provider_name)
-                        .unwrap_or(&[&self.config.model])
-                        .iter()
-                        .map(|m| (*m).to_string())
-                        .collect()
+                    vec![self.config.model.clone()]
                 }
-                Err(_) => self.fallback_models(),
+                Err(_) => vec![self.config.model.clone()],
             },
-            Err(_) => self.fallback_models(),
+            Err(_) => vec![self.config.model.clone()],
         }
-    }
-
-    fn fallback_models(&self) -> Vec<String> {
-        known_model_list(&self.config.provider_name)
-            .unwrap_or(&[&self.config.model])
-            .iter()
-            .map(|m| (*m).to_string())
-            .collect()
     }
 }
 
@@ -505,90 +491,6 @@ struct ChatFunctionDelta {
     arguments: Option<String>,
 }
 
-pub const DEEPSEEK: ProviderDescriptor = ProviderDescriptor {
-    id: "deepseek",
-    name: "DeepSeek",
-    base_url: "https://api.deepseek.com",
-    api_key_env: "DEEPSEEK_API_KEY",
-    default_model: "deepseek-v4-flash",
-    models: &["deepseek-v4-flash", "deepseek-v4-pro"],
-};
-
-pub const ALIBABA: ProviderDescriptor = ProviderDescriptor {
-    id: "alibaba",
-    name: "Alibaba Cloud (DashScope)",
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    api_key_env: "DASHSCOPE_API_KEY",
-    default_model: "qwen-plus",
-    models: &[
-        "qwen-plus",
-        "qwen-max",
-        "qwen-turbo",
-        "qwen3-235b-a22b",
-        "qwq-plus",
-        "deepseek-r1",
-        "kimi-k2.5",
-    ],
-};
-
-pub const ZHIPUAI: ProviderDescriptor = ProviderDescriptor {
-    id: "zhipuai",
-    name: "ZhipuAI (GLM)",
-    base_url: "https://open.bigmodel.cn/api/paas/v4",
-    api_key_env: "ZHIPUAI_API_KEY",
-    default_model: "glm-4-plus",
-    models: &[
-        "glm-4-plus",
-        "glm-4-0520",
-        "glm-4-air",
-        "glm-4-flash",
-        "glm-4v-plus",
-    ],
-};
-
-pub const MOONSHOT: ProviderDescriptor = ProviderDescriptor {
-    id: "moonshot",
-    name: "Moonshot AI (Kimi)",
-    base_url: "https://api.moonshot.cn/v1",
-    api_key_env: "MOONSHOT_API_KEY",
-    default_model: "kimi-k2.5",
-    models: &[
-        "kimi-k2.5",
-        "kimi-k2",
-        "kimi-k2-thinking",
-        "moonshot-v1-8k",
-        "moonshot-v1-32k",
-    ],
-};
-
-pub const BAIDU: ProviderDescriptor = ProviderDescriptor {
-    id: "baidu",
-    name: "Baidu (ERNIE)",
-    base_url: "https://aip.baidubce.com/rpc/2.0/ai/custom/v1/wenxinworkspace/chat",
-    api_key_env: "BAIDU_API_KEY",
-    default_model: "ernie-4.0",
-    models: &[
-        "ernie-4.0",
-        "ernie-3.5",
-        "ernie-speed",
-        "ernie-lite",
-    ],
-};
-
-/// Return the known model list for a well-known provider, or `None`.
-fn known_model_list(provider_name: &str) -> Option<&'static [&'static str]> {
-    match provider_name.to_lowercase().as_str() {
-        "deepseek" => Some(DEEPSEEK.models),
-        "alibaba" => Some(ALIBABA.models),
-        "zhipuai" => Some(ZHIPUAI.models),
-        "moonshot" => Some(MOONSHOT.models),
-        "baidu" => Some(BAIDU.models),
-        "anthropic" => Some(crate::ANTHROPIC.models),
-        "google" => Some(crate::GOOGLE.models),
-        _ => None,
-    }
-}
-
 /// Build an `OpenAiCompatibleConfig` for Alibaba DashScope with `enable_thinking` for reasoning models.
 pub fn alibaba_config(api_key: String, model: String) -> OpenAiCompatibleConfig {
     let model_lower = model.to_lowercase();
@@ -602,10 +504,10 @@ pub fn alibaba_config(api_key: String, model: String) -> OpenAiCompatibleConfig 
     };
     OpenAiCompatibleConfig {
         provider_name: "alibaba".into(),
-        base_url: ALIBABA.base_url.into(),
+        base_url: crate::ALIBABA.base_url.into(),
         model,
         api_key: Some(api_key),
-        api_key_env: Some(ALIBABA.api_key_env.into()),
+        api_key_env: Some(crate::ALIBABA.api_key_env.into()),
         require_api_key: true,
         extra_body,
     }
@@ -621,10 +523,10 @@ pub fn zhipuai_config(api_key: String, model: String) -> OpenAiCompatibleConfig 
     };
     OpenAiCompatibleConfig {
         provider_name: "zhipuai".into(),
-        base_url: ZHIPUAI.base_url.into(),
+        base_url: crate::ZHIPUAI.base_url.into(),
         model,
         api_key: Some(api_key),
-        api_key_env: Some(ZHIPUAI.api_key_env.into()),
+        api_key_env: Some(crate::ZHIPUAI.api_key_env.into()),
         require_api_key: true,
         extra_body,
     }
@@ -634,10 +536,10 @@ pub fn zhipuai_config(api_key: String, model: String) -> OpenAiCompatibleConfig 
 pub fn moonshot_config(api_key: String, model: String) -> OpenAiCompatibleConfig {
     OpenAiCompatibleConfig {
         provider_name: "moonshot".into(),
-        base_url: MOONSHOT.base_url.into(),
+        base_url: crate::MOONSHOT.base_url.into(),
         model,
         api_key: Some(api_key),
-        api_key_env: Some(MOONSHOT.api_key_env.into()),
+        api_key_env: Some(crate::MOONSHOT.api_key_env.into()),
         require_api_key: true,
         extra_body: None,
     }
@@ -647,10 +549,10 @@ pub fn moonshot_config(api_key: String, model: String) -> OpenAiCompatibleConfig
 pub fn baidu_config(api_key: String, model: String) -> OpenAiCompatibleConfig {
     OpenAiCompatibleConfig {
         provider_name: "baidu".into(),
-        base_url: BAIDU.base_url.into(),
+        base_url: crate::BAIDU.base_url.into(),
         model,
         api_key: Some(api_key),
-        api_key_env: Some(BAIDU.api_key_env.into()),
+        api_key_env: Some(crate::BAIDU.api_key_env.into()),
         require_api_key: true,
         extra_body: None,
     }

@@ -7,9 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use joker_provider::{
-    ALIBABA, ANTHROPIC, BAIDU, DEEPSEEK, GOOGLE, MOONSHOT, ZHIPUAI, OpenAiCompatibleConfig,
-};
+use joker_provider::{Route, ALIBABA, ANTHROPIC, BAIDU, DEEPSEEK, GOOGLE, MOONSHOT, ZHIPUAI};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -35,9 +33,13 @@ impl RuntimeConfig {
     pub fn current_model(&self) -> String {
         match &self.provider {
             ProviderSelection::Scripted { model } => model.clone(),
-            ProviderSelection::OpenAiCompatible(config) => config.model.clone(),
-            ProviderSelection::Anthropic { model, .. } => model.clone(),
-            ProviderSelection::Google { model, .. } => model.clone(),
+            ProviderSelection::Route(route) => {
+                if route.default_model.is_empty() {
+                    String::new()
+                } else {
+                    route.default_model.clone()
+                }
+            }
         }
     }
 
@@ -45,11 +47,14 @@ impl RuntimeConfig {
     pub fn provider_label(&self) -> String {
         match &self.provider {
             ProviderSelection::Scripted { .. } => "scripted".into(),
-            ProviderSelection::OpenAiCompatible(config) => {
-                format!("{}/{}", config.provider_name, config.model)
+            ProviderSelection::Route(route) => {
+                let vendor = joker_provider::detect_vendor(&route.base_url);
+                if route.default_model.is_empty() {
+                    vendor.into()
+                } else {
+                    format!("{vendor}/{}", route.default_model)
+                }
             }
-            ProviderSelection::Anthropic { model, .. } => format!("anthropic/{model}"),
-            ProviderSelection::Google { model, .. } => format!("google/{model}"),
         }
     }
 
@@ -61,69 +66,47 @@ impl RuntimeConfig {
     pub fn needs_api_key(&self) -> Option<String> {
         match &self.provider {
             ProviderSelection::Scripted { .. } => None,
-            ProviderSelection::OpenAiCompatible(config) => {
-                if config.require_api_key && config.api_key.is_none() && config.api_key_env.is_some() {
-                    Some(config.api_key_env.as_deref().unwrap_or("API_KEY").to_string())
-                } else {
-                    None
+            ProviderSelection::Route(route) => {
+                match &route.auth.credentials {
+                    joker_provider::CredentialSource::EnvVar(name) => {
+                        if std::env::var(name).is_err() {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
                 }
-            }
-            ProviderSelection::Anthropic { api_key, .. } => {
-                if api_key.is_none() { Some("ANTHROPIC_API_KEY".to_string()) } else { None }
-            }
-            ProviderSelection::Google { api_key, .. } => {
-                if api_key.is_none() { Some("GOOGLE_GENERATIVE_AI_API_KEY".to_string()) } else { None }
             }
         }
     }
 
     pub fn switch_model(&mut self, model: impl Into<String>) -> Result<(), ConfigError> {
+        let model = model.into();
+        if model.trim().is_empty() {
+            return Err(ConfigError::InvalidValue("model cannot be empty".into()));
+        }
         match &mut self.provider {
-            ProviderSelection::Scripted { model } => {
-                *model = "scripted".into();
-                Ok(())
-            }
-            ProviderSelection::OpenAiCompatible(config) => {
-                let model = model.into();
-                if model.trim().is_empty() {
-                    return Err(ConfigError::InvalidValue("model cannot be empty".into()));
-                }
-                config.model = model;
-                Ok(())
-            }
-            ProviderSelection::Anthropic { model: m, .. } => {
-                let model = model.into();
-                if model.trim().is_empty() {
-                    return Err(ConfigError::InvalidValue("model cannot be empty".into()));
-                }
-                *m = model;
-                Ok(())
-            }
-            ProviderSelection::Google { model: m, .. } => {
-                let model = model.into();
-                if model.trim().is_empty() {
-                    return Err(ConfigError::InvalidValue("model cannot be empty".into()));
-                }
-                *m = model;
+            ProviderSelection::Scripted { .. } => Ok(()),
+            ProviderSelection::Route(route) => {
+                route.default_model = model;
                 Ok(())
             }
         }
     }
 
+    /// Available models — this list is only populated if model discovery
+    /// has been run. For dynamic discovery, use `joker_provider::discover_models()`.
     #[must_use]
     pub fn available_models(&self) -> Vec<String> {
         match &self.provider {
             ProviderSelection::Scripted { model } => vec![model.clone()],
-            ProviderSelection::OpenAiCompatible(config) => known_model_list(&config.provider_name)
-                .unwrap_or(&[&config.model])
-                .iter()
-                .map(|m| (*m).into())
-                .collect(),
-            ProviderSelection::Anthropic { .. } => {
-                ANTHROPIC.models.iter().map(|m| (*m).into()).collect()
-            }
-            ProviderSelection::Google { .. } => {
-                GOOGLE.models.iter().map(|m| (*m).into()).collect()
+            ProviderSelection::Route(route) => {
+                if route.default_model.is_empty() {
+                    vec![]
+                } else {
+                    vec![route.default_model.clone()]
+                }
             }
         }
     }
@@ -133,30 +116,29 @@ impl RuntimeConfig {
         FileConfig {
             provider: Some(match &self.provider {
                 ProviderSelection::Scripted { .. } => "scripted".into(),
-                ProviderSelection::OpenAiCompatible(config) => config.provider_name.clone(),
-                ProviderSelection::Anthropic { .. } => "anthropic".into(),
-                ProviderSelection::Google { .. } => "google".into(),
+                ProviderSelection::Route(route) => {
+                    let vendor = joker_provider::detect_vendor(&route.base_url);
+                    if vendor == "unknown" {
+                        route.id.clone()
+                    } else {
+                        vendor.into()
+                    }
+                }
             }),
-            model: Some(match &self.provider {
-                ProviderSelection::Scripted { model } => model.clone(),
-                ProviderSelection::OpenAiCompatible(config) => config.model.clone(),
-                ProviderSelection::Anthropic { model, .. } => model.clone(),
-                ProviderSelection::Google { model, .. } => model.clone(),
-            }),
+            model: Some(self.current_model()),
             base_url: match &self.provider {
-                ProviderSelection::OpenAiCompatible(config)
-                    if !is_known_preset(&config.provider_name) =>
+                ProviderSelection::Route(route)
+                    if joker_provider::detect_vendor(&route.base_url) == "unknown" =>
                 {
-                    Some(config.base_url.clone())
+                    Some(route.base_url.clone())
                 }
                 _ => None,
             },
             api_key_env: match &self.provider {
-                ProviderSelection::OpenAiCompatible(config)
-                    if !is_known_preset(&config.provider_name) =>
-                {
-                    config.api_key_env.clone()
-                }
+                ProviderSelection::Route(route) => match &route.auth.credentials {
+                    joker_provider::CredentialSource::EnvVar(name) => Some(name.clone()),
+                    _ => None,
+                },
                 _ => None,
             },
             scripted_response: Some(self.scripted_response.clone()),
@@ -172,15 +154,7 @@ impl RuntimeConfig {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderSelection {
     Scripted { model: String },
-    OpenAiCompatible(OpenAiCompatibleConfig),
-    Anthropic {
-        model: String,
-        api_key: Option<String>,
-    },
-    Google {
-        model: String,
-        api_key: Option<String>,
-    },
+    Route(Route),
 }
 
 impl ProviderSelection {
@@ -194,50 +168,23 @@ impl ProviderSelection {
     pub fn preset(provider: &str) -> Result<Self, ConfigError> {
         match provider.trim().to_ascii_lowercase().as_str() {
             "" | "scripted" => Ok(Self::scripted()),
-            "deepseek" => Ok(Self::OpenAiCompatible(OpenAiCompatibleConfig {
-                provider_name: DEEPSEEK.id.into(),
-                base_url: DEEPSEEK.base_url.into(),
-                model: DEEPSEEK.default_model.into(),
-                api_key: std::env::var(DEEPSEEK.api_key_env).ok(),
-                api_key_env: Some(DEEPSEEK.api_key_env.into()),
-                require_api_key: true,
-                extra_body: None,
-            })),
-            "openai-compatible" | "custom" => Ok(Self::OpenAiCompatible(OpenAiCompatibleConfig {
-                provider_name: "openai-compatible".into(),
+            "deepseek" => Ok(Self::Route(DEEPSEEK.into_route(Some("deepseek-chat")))),
+            "anthropic" => Ok(Self::Route(ANTHROPIC.into_route(Some("claude-sonnet-4-20250514")))),
+            "google" => Ok(Self::Route(GOOGLE.into_route(Some("gemini-2-5-flash")))),
+            "alibaba" | "dashscope" => Ok(Self::Route(ALIBABA.into_route(Some("qwen-plus")))),
+            "zhipuai" | "glm" => Ok(Self::Route(ZHIPUAI.into_route(Some("glm-4-plus")))),
+            "moonshot" | "kimi" => Ok(Self::Route(MOONSHOT.into_route(Some("kimi-k2.5")))),
+            "baidu" | "ernie" => Ok(Self::Route(BAIDU.into_route(Some("ernie-4.0")))),
+            "openai-compatible" | "custom" => Ok(Self::Route(Route {
+                id: "openai-compatible".into(),
+                protocol: joker_provider::Protocol::ChatCompletions,
                 base_url: "http://localhost:8000/v1".into(),
-                model: "model".into(),
-                api_key: std::env::var("OPENAI_COMPATIBLE_API_KEY").ok(),
-                api_key_env: Some("OPENAI_COMPATIBLE_API_KEY".into()),
-                require_api_key: false,
-                extra_body: None,
+                auth: joker_provider::Auth::bearer_from_env("OPENAI_COMPATIBLE_API_KEY"),
+                framing: joker_provider::Framing::Sse,
+                default_model: "model".into(),
             })),
-            "anthropic" => Ok(Self::Anthropic {
-                model: ANTHROPIC.default_model.into(),
-                api_key: std::env::var(ANTHROPIC.api_key_env).ok(),
-            }),
-            "google" => Ok(Self::Google {
-                model: GOOGLE.default_model.into(),
-                api_key: std::env::var(GOOGLE.api_key_env).ok(),
-            }),
-            "alibaba" | "dashscope" => Self::openai_preset(ALIBABA),
-            "zhipuai" | "glm" => Self::openai_preset(ZHIPUAI),
-            "moonshot" | "kimi" => Self::openai_preset(MOONSHOT),
-            "baidu" | "ernie" => Self::openai_preset(BAIDU),
             other => Err(ConfigError::UnknownProvider(other.into())),
         }
-    }
-
-    fn openai_preset(desc: joker_provider::ProviderDescriptor) -> Result<Self, ConfigError> {
-        Ok(Self::OpenAiCompatible(OpenAiCompatibleConfig {
-            provider_name: desc.id.into(),
-            base_url: desc.base_url.into(),
-            model: desc.default_model.into(),
-            api_key: std::env::var(desc.api_key_env).ok(),
-            api_key_env: Some(desc.api_key_env.into()),
-            require_api_key: true,
-            extra_body: None,
-        }))
     }
 }
 
@@ -259,7 +206,6 @@ pub struct FileConfig {
 }
 
 impl FileConfig {
-    /// Return the list of configured agent names from `[agent.<name>]` sections.
     pub fn agent_names(&self) -> Vec<&str> {
         self.agent.keys().map(|s| s.as_str()).collect()
     }
@@ -273,7 +219,6 @@ pub struct ProviderConfig {
     pub api_key_env: Option<String>,
 }
 
-/// Agent profile configuration, matching TOML `[agent.<name>]` sections.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub struct AgentProfileConfig {
     pub model: Option<String>,
@@ -284,7 +229,6 @@ pub struct AgentProfileConfig {
     pub permissions: PermissionRuleConfig,
 }
 
-/// Per-tool permission configuration in TOML.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ToolPermissionConfig {
     #[serde(default)]
@@ -293,7 +237,6 @@ pub struct ToolPermissionConfig {
     pub permission: Option<String>,
 }
 
-/// Permission rule configuration for TOML.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub struct PermissionRuleConfig {
     #[serde(default)]
@@ -306,12 +249,9 @@ pub struct PermissionRuleConfig {
     pub remember_session_approvals: Option<bool>,
 }
 
-/// MCP server configuration to connect to external tool providers.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub struct McpServerConfig {
-    /// The command to spawn (for stdio transport).
     pub command: Option<String>,
-    /// Arguments passed to the command.
     #[serde(default)]
     pub args: Vec<String>,
 }
@@ -385,16 +325,19 @@ pub fn resolve_config(
     if let Some(model) = overrides.model.or(file.model.clone()) {
         config.switch_model(model)?;
     }
-    if let Some(base_url) = overrides.base_url.or(file.base_url.clone())
-        && let ProviderSelection::OpenAiCompatible(provider) = &mut config.provider
-    {
-        provider.base_url = base_url;
+    if let Some(base_url) = overrides.base_url.or(file.base_url.clone()) {
+        if let ProviderSelection::Route(route) = &mut config.provider {
+            route.base_url = base_url;
+        }
     }
-    if let Some(api_key_env) = overrides.api_key_env.or(file.api_key_env.clone())
-        && let ProviderSelection::OpenAiCompatible(provider) = &mut config.provider
-    {
-        provider.api_key = std::env::var(&api_key_env).ok();
-        provider.api_key_env = Some(api_key_env);
+    if let Some(api_key_env) = overrides.api_key_env.or(file.api_key_env.clone()) {
+        if let ProviderSelection::Route(route) = &mut config.provider {
+            let key = std::env::var(&api_key_env).ok();
+            route.auth.credentials = match key {
+                Some(v) => joker_provider::CredentialSource::Value(v),
+                None => joker_provider::CredentialSource::EnvVar(api_key_env),
+            };
+        }
     }
 
     Ok(config)
@@ -406,39 +349,36 @@ fn provider_from_file(provider: &str, file: &FileConfig) -> Result<ProviderSelec
             .api_key_env
             .clone()
             .unwrap_or_else(|| format!("{}_API_KEY", env_prefix(provider)));
-        return Ok(ProviderSelection::OpenAiCompatible(
-            OpenAiCompatibleConfig {
-                provider_name: provider.into(),
-                base_url: custom.base_url.clone(),
-                model: custom.model.clone(),
-                api_key: std::env::var(&api_key_env).ok(),
-                api_key_env: Some(api_key_env),
-                require_api_key: false,
-                extra_body: None,
-            },
-        ));
+
+        let kind = custom.kind.as_deref().unwrap_or("openai-compatible");
+        let protocol = match kind {
+            "anthropic" => joker_provider::Protocol::AnthropicMessages,
+            "google" => joker_provider::Protocol::GoogleGemini,
+            _ => joker_provider::Protocol::ChatCompletions,
+        };
+        let framing = joker_provider::guess_framing(&protocol);
+        let auth = match protocol {
+            joker_provider::Protocol::AnthropicMessages => {
+                joker_provider::Auth::api_key_from_env("x-api-key", &api_key_env)
+            }
+            joker_provider::Protocol::GoogleGemini => {
+                joker_provider::Auth::api_key_from_env("x-goog-api-key", &api_key_env)
+            }
+            joker_provider::Protocol::ChatCompletions => {
+                joker_provider::Auth::bearer_from_env(&api_key_env)
+            }
+        };
+
+        return Ok(ProviderSelection::Route(Route {
+            id: provider.into(),
+            protocol,
+            base_url: custom.base_url.clone(),
+            auth,
+            framing,
+            default_model: custom.model.clone(),
+        }));
     }
     ProviderSelection::preset(provider)
-}
-
-/// Check if a provider name is a built-in preset (not a custom endpoint).
-fn is_known_preset(name: &str) -> bool {
-    matches!(
-        name.to_lowercase().as_str(),
-        "deepseek" | "alibaba" | "zhipuai" | "moonshot" | "baidu"
-    )
-}
-
-/// Return the known model list for a well-known provider, or `None`.
-fn known_model_list(provider_name: &str) -> Option<&'static [&'static str]> {
-    match provider_name.to_lowercase().as_str() {
-        "deepseek" => Some(DEEPSEEK.models),
-        "alibaba" => Some(ALIBABA.models),
-        "zhipuai" => Some(ZHIPUAI.models),
-        "moonshot" => Some(MOONSHOT.models),
-        "baidu" => Some(BAIDU.models),
-        _ => None,
-    }
 }
 
 fn env_prefix(provider: &str) -> String {
@@ -484,12 +424,11 @@ mod tests {
         )
         .unwrap();
 
-        let ProviderSelection::OpenAiCompatible(provider) = config.provider else {
-            panic!("expected openai-compatible provider");
+        let ProviderSelection::Route(route) = config.provider else {
+            panic!("expected Route provider");
         };
-        assert_eq!(provider.base_url, "https://api.deepseek.com");
-        assert_eq!(provider.model, "deepseek-v4-flash");
-        assert_eq!(provider.api_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
+        assert_eq!(route.base_url, "https://api.deepseek.com");
+        assert_eq!(route.default_model, "deepseek-chat");
     }
 
     #[test]
@@ -507,10 +446,10 @@ mod tests {
         )
         .unwrap();
 
-        let ProviderSelection::OpenAiCompatible(provider) = config.provider else {
-            panic!("expected openai-compatible provider");
+        let ProviderSelection::Route(route) = config.provider else {
+            panic!("expected Route provider");
         };
-        assert_eq!(provider.model, "deepseek-v4-flash");
+        assert_eq!(route.default_model, "deepseek-v4-flash");
     }
 
     #[test]
@@ -529,6 +468,6 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         assert!(raw.contains("provider = \"deepseek\""));
-        assert!(raw.contains("model = \"deepseek-v4-flash\""));
+        assert!(raw.contains("model = \"deepseek-chat\""));
     }
 }

@@ -52,7 +52,7 @@ async fn e2e_golden_path_scripted_run() {
 
     while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
         match event {
-            UiEvent::Agent(joker::Event::ModelDelta { delta }) => {
+            UiEvent::Agent(joker::Event::TextDelta { delta }) => {
                 saw_delta |= delta.contains("Joker");
             }
             UiEvent::RunCompleted(result) => {

@@ -13,27 +13,90 @@ pub trait Observer: Send + Sync {
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    // ── Lifecycle ──────────────────────────────────────────────────────
     RunStarted,
     RunFinished { stop_reason: StopReason },
+
+    // ── Turn boundaries (OUTLINE 2.4) ──────────────────────────────────
+    TurnStarted {
+        session_id: String,
+        turn_id: String,
+        agent_name: String,
+        model_id: String,
+    },
+    TurnDone {
+        turn_id: String,
+        stop_reason: StopReason,
+    },
+
+    // ── Model output (OUTLINE 2.4: TextDelta, ReasoningDelta distinct) ─
     ModelStarted,
+    /// Deprecated: use `TextDelta` and `ReasoningDelta` instead.
+    #[deprecated(note = "use Event::TextDelta and Event::ReasoningDelta")]
     ModelDelta { delta: String },
     ModelFinished { stop_reason: StopReason },
+    TextDelta { delta: String },
+    ReasoningDelta { delta: String },
+
+    // ── Tool lifecycle (OUTLINE 2.4: ToolDispatch, ToolProgress) ──────
     ToolStarted { call_id: String, name: String },
     ToolDelta { call_id: String, delta: Value },
+    ToolProgress { call_id: String, partial_output: String },
+    ToolDispatch {
+        call_id: String,
+        tool_name: String,
+        args_preview: Value,
+    },
     ToolFinished { result: ToolResult },
+
+    // ── Token usage (OUTLINE 2.4) ──────────────────────────────────────
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_hit_tokens: u64,
+    },
+
+    // ── Context compaction (OUTLINE 2.4) ───────────────────────────────
+    CompactionStarted {
+        trigger: String,
+        current_tokens: usize,
+        threshold: usize,
+    },
+    CompactionDone {
+        tokens_before: usize,
+        tokens_after: usize,
+    },
+
+    // ── Agent / model switching (OUTLINE 2.4) ──────────────────────────
+    AgentSwitched { from: String, to: String },
+    ModelSwitched { from: String, to: String },
+
+    // ── Limits (OUTLINE 2.4) ───────────────────────────────────────────
     LimitReached { reason: String },
-    /// Emitted when the agent encounters an `Ask` decision from the policy.
+
+    // ── Permission (OUTLINE 2.2) ───────────────────────────────────────
     PermissionRequested {
         request_id: String,
         tool_name: String,
         subject: String,
         reason: String,
     },
-    /// Emitted when a permission request is resolved (approved or denied).
     PermissionResolved {
         request_id: String,
         approved: bool,
         reason: Option<String>,
+    },
+
+    // ── Error / retry (OUTLINE 2.1: loop fault tolerance) ──────────────
+    Error {
+        kind: String,
+        message: String,
+        recoverable: bool,
+    },
+    Retrying {
+        attempt: usize,
+        max_attempts: usize,
+        reason: String,
     },
 }
 

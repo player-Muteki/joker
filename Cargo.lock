@@ -921,6 +921,7 @@ name = "joker-tools"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "base64",
  "glob",
  "ignore",
  "joker",
@@ -951,6 +952,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-util",
+ "toml",
  "unicode-width 0.2.0",
 ]
 

@@ -1,14 +1,22 @@
-use std::sync::Arc;
+// Items marked `pub` are re-exported via `lib.rs` — not truly unreachable.
+#![allow(unreachable_pub)]
+
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::Duration;
 
 use futures_util::{StreamExt, future::join_all};
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     AllowAllPolicy, ApprovalRequest, ApprovalResponse, BuiltContext, Content, ContextBuilder,
-    ContextInput, ContextLimits, Event, Model, ModelRequest, ModelResponseEvent, NoopObserver,
-    Observer, PassthroughContextBuilder, RunError, SharedApprovalChannel, StopReason, TextContent,
-    ToolCall, ToolDecision, ToolInvocation, ToolName, ToolPolicy, ToolPolicyRequest, ToolRegistry,
-    ToolResult,
+    ContextInput, ContextLimits, Event, Model, ModelError, ModelRequest, ModelResponseEvent,
+    NoopObserver, Observer, PassthroughContextBuilder, RunError, SharedApprovalChannel,
+    StopReason, TextContent, ToolCall, ToolDecision, ToolInvocation, ToolName, ToolPolicy,
+    ToolPolicyRequest, ToolRegistry, ToolResult,
 };
 
 pub struct Agent {
@@ -19,6 +27,16 @@ pub struct Agent {
     observer: Arc<dyn Observer>,
     config: AgentConfig,
     approval_channel: Option<SharedApprovalChannel>,
+    run_state: AtomicBool,
+}
+
+/// RAII guard that resets the run state on drop.
+struct RunGuard<'a>(&'a AtomicBool);
+
+impl Drop for RunGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl Agent {
@@ -32,6 +50,7 @@ impl Agent {
             observer: Arc::new(NoopObserver),
             config: AgentConfig::default(),
             approval_channel: None,
+            run_state: AtomicBool::new(false),
         }
     }
 
@@ -72,11 +91,21 @@ impl Agent {
     }
 
     pub async fn run(&self, mut request: RunRequest) -> Result<RunOutcome, RunError> {
+        // Busy check — prevent concurrent runs
+        if self.run_state.swap(true, Ordering::Acquire) {
+            return Err(RunError::Busy);
+        }
+        let _guard = RunGuard(&self.run_state);
+
         let cancellation_token = request
             .cancellation_token
             .clone()
             .unwrap_or_default();
         observe(&self.observer, Event::RunStarted).await;
+
+        // Generate a simple session/turn ID for event correlation
+        let turn_id = format!("turn-{}", now_millis());
+        let model_id = "unknown".to_string();
 
         let mut stop_reason = StopReason::Stop;
         let result = async {
@@ -101,54 +130,29 @@ impl Agent {
                 }
                 steps += 1;
 
-                let BuiltContext { messages } = self
-                    .context_builder
-                    .build(ContextInput {
-                        conversation: &request.conversation,
-                        limits: self.config.context_limits,
-                    })
+                let outcome = self
+                    .run_turn(&mut request.conversation, &turn_id, &model_id, &cancellation_token)
                     .await?;
 
-                observe(&self.observer, Event::ModelStarted).await;
-                let stream = self
-                    .model
-                    .stream(ModelRequest {
-                        messages,
-                        tools: self.tools.definitions(),
-                    })
-                    .await?;
-                let model_output =
-                    collect_model_output(stream, &self.observer, &cancellation_token).await?;
-                observe(
-                    &self.observer,
-                    Event::ModelFinished {
-                        stop_reason: model_output.stop_reason,
-                    },
-                )
-                .await;
-
-                let assistant_message = crate::Message::assistant(model_output.content.clone());
-                let pending_tool_calls = model_output.tool_calls;
-                request.conversation.push(assistant_message);
-
-                if pending_tool_calls.is_empty() {
+                if !outcome.has_tool_calls {
                     return Ok(RunOutcome {
                         conversation: request.conversation,
-                        stop_reason: model_output.stop_reason,
+                        stop_reason: outcome.stop_reason,
                     });
                 }
 
-                if tool_calls + pending_tool_calls.len() > self.config.limits.max_tool_calls {
+                if tool_calls + outcome.pending_tool_calls.len() > self.config.limits.max_tool_calls
+                {
                     observe_limit(&self.observer, "max_tool_calls").await;
                     return Ok(RunOutcome {
                         conversation: request.conversation,
                         stop_reason: StopReason::LimitReached,
                     });
                 }
-                tool_calls += pending_tool_calls.len();
+                tool_calls += outcome.pending_tool_calls.len();
 
                 let results = self
-                    .execute_tool_calls(pending_tool_calls, &cancellation_token)
+                    .execute_tool_calls(outcome.pending_tool_calls, &cancellation_token)
                     .await?;
                 request.conversation.push(crate::Message::tool(results));
             }
@@ -162,6 +166,158 @@ impl Agent {
         }
         observe(&self.observer, Event::RunFinished { stop_reason }).await;
         result
+    }
+
+    /// Execute a single turn: model call + tool execution.
+    ///
+    /// Returns a `TurnOutcome` indicating whether there were tool calls to continue.
+    /// This method is the primitive that both `run()` and `AgentRuntime::run()` use.
+    pub async fn run_turn(
+        &self,
+        conversation: &mut crate::Conversation,
+        turn_id: &str,
+        model_id: &str,
+        cancellation_token: &CancellationToken,
+    ) -> Result<TurnOutcome, RunError> {
+        // Emit TurnStarted before each model call
+        observe(
+            &self.observer,
+            Event::TurnStarted {
+                session_id: String::new(),
+                turn_id: turn_id.to_string(),
+                agent_name: String::new(),
+                model_id: model_id.to_string(),
+            },
+        )
+        .await;
+
+        let BuiltContext { messages } = self
+            .context_builder
+            .build(ContextInput {
+                conversation,
+                limits: self.config.context_limits,
+            })
+            .await?;
+
+        observe(&self.observer, Event::ModelStarted).await;
+
+        // Retry loop: handles model stream errors and zero-output responses
+        let model_output = {
+            let cfg = &self.config.retry;
+            let mut stream_errors = 0usize;
+            let mut zero_outputs = 0usize;
+
+            loop {
+                let stream = match self
+                    .model
+                    .stream(ModelRequest {
+                        messages: messages.clone(),
+                        tools: self.tools.definitions(),
+                    })
+                    .await
+                {
+                    Ok(stream) => stream,
+                    Err(ModelError::Stream(reason)) => {
+                        stream_errors += 1;
+                        if stream_errors > cfg.max_stream_retries {
+                            return Err(RunError::Model(ModelError::Stream(reason)));
+                        }
+                        observe(
+                            &self.observer,
+                            Event::Retrying {
+                                attempt: stream_errors,
+                                max_attempts: cfg.max_stream_retries,
+                                reason: format!("model stream error: {reason}"),
+                            },
+                        )
+                        .await;
+                        tokio::time::sleep(Duration::from_millis(
+                            cfg.base_delay_ms * (1 << (stream_errors - 1)),
+                        ))
+                        .await;
+                        continue;
+                    }
+                    Err(ModelError::Cancelled) => return Err(RunError::Cancelled),
+                };
+
+                let output =
+                    collect_model_output(stream, &self.observer, cancellation_token).await?;
+
+                // Retry on zero output (empty content + no tool calls)
+                if output.content.is_empty() && output.tool_calls.is_empty() {
+                    zero_outputs += 1;
+                    if zero_outputs <= cfg.max_zero_output_retries {
+                        observe(
+                            &self.observer,
+                            Event::Retrying {
+                                attempt: zero_outputs,
+                                max_attempts: cfg.max_zero_output_retries,
+                                reason: "model returned empty response".into(),
+                            },
+                        )
+                        .await;
+                        tokio::time::sleep(Duration::from_millis(
+                            cfg.base_delay_ms * (1 << (zero_outputs - 1)),
+                        ))
+                        .await;
+                        continue;
+                    }
+                }
+
+                break output;
+            }
+        };
+
+        // Emit ModelFinished before Usage/TurnDone (per event contract:
+        // ModelStarted → … → ModelFinished → Usage → TurnDone)
+        observe(
+            &self.observer,
+            Event::ModelFinished {
+                stop_reason: model_output.stop_reason,
+            },
+        )
+        .await;
+
+        // Emit Usage event with token counts
+        observe(
+            &self.observer,
+            Event::Usage {
+                input_tokens: model_output.usage.input_tokens,
+                output_tokens: model_output.usage.output_tokens,
+                cache_hit_tokens: model_output.usage.cache_hit_tokens,
+            },
+        )
+        .await;
+
+        // Emit TurnDone for this model call
+        observe(
+            &self.observer,
+            Event::TurnDone {
+                turn_id: turn_id.to_string(),
+                stop_reason: model_output.stop_reason,
+            },
+        )
+        .await;
+
+        let assistant_message = crate::Message::assistant(model_output.content.clone());
+        let pending_tool_calls = model_output.tool_calls;
+        conversation.push(assistant_message);
+
+        if pending_tool_calls.is_empty() {
+            return Ok(TurnOutcome {
+                stop_reason: model_output.stop_reason,
+                has_tool_calls: false,
+                tool_calls_count: 0,
+                pending_tool_calls: Vec::new(),
+            });
+        }
+
+        Ok(TurnOutcome {
+            stop_reason: model_output.stop_reason,
+            has_tool_calls: true,
+            tool_calls_count: pending_tool_calls.len(),
+            pending_tool_calls,
+        })
     }
 
     async fn execute_tool_calls(
@@ -219,6 +375,16 @@ impl Agent {
             .tools
             .get(&invocation.name)
             .map(|tool| tool.definition());
+        // Emit ToolDispatch before execution so the UI can show the pending call
+        observe(
+            &self.observer,
+            Event::ToolDispatch {
+                call_id: invocation.call_id.clone(),
+                tool_name: invocation.name.to_string(),
+                args_preview: invocation.arguments.clone(),
+            },
+        )
+        .await;
         observe(
             &self.observer,
             Event::ToolStarted {
@@ -459,6 +625,7 @@ impl AgentBuilder {
             observer,
             config: self.config.unwrap_or_default(),
             approval_channel: self.approval_channel,
+            run_state: AtomicBool::new(false),
         }
     }
 }
@@ -556,6 +723,7 @@ pub struct AgentConfig {
     pub limits: RunLimits,
     pub execution_mode: ExecutionMode,
     pub context_limits: ContextLimits,
+    pub retry: RetryConfig,
 }
 
 impl Default for AgentConfig {
@@ -564,6 +732,31 @@ impl Default for AgentConfig {
             limits: RunLimits::default(),
             execution_mode: ExecutionMode::Sequential,
             context_limits: ContextLimits::default(),
+            retry: RetryConfig::default(),
+        }
+    }
+}
+
+/// Configuration for retry behavior when the model stream fails or returns
+/// empty output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetryConfig {
+    /// Maximum number of retries on `ModelError::Stream` (default: 4).
+    pub max_stream_retries: usize,
+    /// Maximum number of retries when the model returns empty output
+    /// (no content, no tool calls). Default: 3.
+    pub max_zero_output_retries: usize,
+    /// Base delay in milliseconds for exponential backoff.
+    /// Actual delay = `base_delay_ms * 2^(attempt - 1)`. Default: 1000.
+    pub base_delay_ms: u64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_stream_retries: 4,
+            max_zero_output_retries: 3,
+            base_delay_ms: 1000,
         }
     }
 }
@@ -636,10 +829,187 @@ pub struct RunOutcome {
     pub stop_reason: StopReason,
 }
 
+/// Result of a single turn execution (one model call, no tool execution).
+///
+/// The caller is responsible for checking `max_tool_calls` and then
+/// executing `pending_tool_calls` via `agent.execute_tool_calls()`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnOutcome {
+    pub stop_reason: StopReason,
+    pub has_tool_calls: bool,
+    pub tool_calls_count: usize,
+    pub pending_tool_calls: Vec<ToolCall>,
+}
+
+/// Commands that can be sent to an active `AgentRuntime` run.
+///
+/// Ops are processed between turns (not mid-turn). For mid-turn cancellation,
+/// the existing `CancellationToken` mechanism is used.
+#[derive(Clone, Debug)]
+pub enum Op {
+    /// Cancel the current run (triggers CancellationToken).
+    Cancel,
+    /// Request context compaction on the next turn.
+    Compact,
+    /// Switch to a different agent profile.
+    SwitchAgent { name: String },
+    /// Shut down the run loop.
+    Shutdown,
+}
+
+/// An agent execution runtime with OpLoop support.
+///
+/// Wraps an `Agent` and processes `Op` commands between turns. The underlying
+/// `Agent::run()` API is unchanged — existing code that calls `agent.run(request)`
+/// continues to work without modification.
+pub struct AgentRuntime {
+    agent: Agent,
+}
+
+impl AgentRuntime {
+    /// Create a new runtime wrapping an Agent.
+    #[must_use]
+    pub fn new(agent: Agent) -> Self {
+        Self { agent }
+    }
+
+    /// Run with OpLoop — processes Ops between turns via the provided channel.
+    ///
+    /// The caller is responsible for creating the channel and keeping the sender
+    /// to submit Ops during execution.
+    ///
+    /// # Op processing
+    /// - `Cancel` triggers the CancellationToken (checked mid-turn also)
+    /// - `Shutdown` returns `Err(RunError::Shutdown)` at the next turn boundary
+    /// - `Compact` and `SwitchAgent` emit events for the UI to observe
+    pub async fn run(
+        &self,
+        mut request: RunRequest,
+        rx_op: &mut mpsc::UnboundedReceiver<Op>,
+    ) -> Result<RunOutcome, RunError> {
+        // Busy check — prevent concurrent runs
+        if self.agent.run_state.swap(true, Ordering::Acquire) {
+            return Err(RunError::Busy);
+        }
+        let _guard = RunGuard(&self.agent.run_state);
+
+        let cancellation_token = request
+            .cancellation_token
+            .clone()
+            .unwrap_or_default();
+        observe(&self.agent.observer, Event::RunStarted).await;
+
+        let turn_id = format!("turn-{}", now_millis());
+        let model_id = "unknown".to_string();
+
+        let mut stop_reason = StopReason::Stop;
+        let result = async {
+            if request.conversation.messages().is_empty()
+                && let Some(input) = request.input.take()
+            {
+                request.conversation.push(crate::Message::user(input));
+            }
+
+            let mut steps = 0usize;
+            let mut tool_calls = 0usize;
+            loop {
+                // Process pending Ops between turns (non-blocking)
+                while let Ok(op) = rx_op.try_recv() {
+                    match op {
+                        Op::Cancel => {
+                            cancellation_token.cancel();
+                        }
+                        Op::Compact => {
+                            observe(
+                                &self.agent.observer,
+                                Event::CompactionStarted {
+                                    trigger: "manual".into(),
+                                    current_tokens: 0,
+                                    threshold: 0,
+                                },
+                            )
+                            .await;
+                            observe(
+                                &self.agent.observer,
+                                Event::CompactionDone {
+                                    tokens_before: 0,
+                                    tokens_after: 0,
+                                },
+                            )
+                            .await;
+                        }
+                        Op::SwitchAgent { name } => {
+                            observe(
+                                &self.agent.observer,
+                                Event::AgentSwitched {
+                                    from: String::new(),
+                                    to: name,
+                                },
+                            )
+                            .await;
+                        }
+                        Op::Shutdown => return Err(RunError::Shutdown),
+                    }
+                }
+
+                if cancellation_token.is_cancelled() {
+                    return Err(RunError::Cancelled);
+                }
+                if steps >= self.agent.config.limits.max_steps {
+                    observe_limit(&self.agent.observer, "max_steps").await;
+                    return Ok(RunOutcome {
+                        conversation: request.conversation,
+                        stop_reason: StopReason::LimitReached,
+                    });
+                }
+                steps += 1;
+
+                let outcome = self
+                    .agent
+                    .run_turn(&mut request.conversation, &turn_id, &model_id, &cancellation_token)
+                    .await?;
+
+                if !outcome.has_tool_calls {
+                    return Ok(RunOutcome {
+                        conversation: request.conversation,
+                        stop_reason: outcome.stop_reason,
+                    });
+                }
+
+                if tool_calls + outcome.tool_calls_count > self.agent.config.limits.max_tool_calls
+                {
+                    observe_limit(&self.agent.observer, "max_tool_calls").await;
+                    return Ok(RunOutcome {
+                        conversation: request.conversation,
+                        stop_reason: StopReason::LimitReached,
+                    });
+                }
+                tool_calls += outcome.tool_calls_count;
+
+                let results = self
+                    .agent
+                    .execute_tool_calls(outcome.pending_tool_calls, &cancellation_token)
+                    .await?;
+                request.conversation.push(crate::Message::tool(results));
+            }
+        }
+        .await;
+
+        if let Ok(outcome) = &result {
+            stop_reason = outcome.stop_reason;
+        } else if matches!(result, Err(RunError::Cancelled)) {
+            stop_reason = StopReason::Cancelled;
+        }
+        observe(&self.agent.observer, Event::RunFinished { stop_reason }).await;
+        result
+    }
+}
+
 struct ModelOutput {
     content: Vec<Content>,
     tool_calls: Vec<ToolCall>,
     stop_reason: StopReason,
+    usage: crate::Usage,
 }
 
 async fn collect_model_output(
@@ -653,6 +1023,7 @@ async fn collect_model_output(
     let mut tool_calls = Vec::new();
     let mut stop_reason = StopReason::Stop;
 
+    let mut model_usage = crate::Usage::default();
     while let Some(event) = stream.next().await {
         if cancellation_token.is_cancelled() {
             return Err(RunError::Cancelled);
@@ -661,7 +1032,7 @@ async fn collect_model_output(
             ModelResponseEvent::TextDelta(delta) => {
                 observe(
                     observer,
-                    Event::ModelDelta {
+                    Event::TextDelta {
                         delta: delta.clone(),
                     },
                 )
@@ -671,7 +1042,7 @@ async fn collect_model_output(
             ModelResponseEvent::ReasoningDelta(delta) => {
                 observe(
                     observer,
-                    Event::ModelDelta {
+                    Event::ReasoningDelta {
                         delta: delta.clone(),
                     },
                 )
@@ -694,8 +1065,9 @@ async fn collect_model_output(
             }
             ModelResponseEvent::Finished {
                 stop_reason: reason,
-                ..
+                usage: event_usage,
             } => {
+                model_usage = event_usage;
                 stop_reason = reason;
                 break;
             }
@@ -715,6 +1087,7 @@ async fn collect_model_output(
         content,
         tool_calls,
         stop_reason,
+        usage: model_usage,
     })
 }
 
@@ -730,4 +1103,11 @@ async fn observe_limit(observer: &Arc<dyn Observer>, reason: impl Into<String>) 
         },
     )
     .await;
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }

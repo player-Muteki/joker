@@ -14,6 +14,10 @@ pub enum RunError {
     Cancelled,
     #[error("run limit reached: {0}")]
     LimitReached(&'static str),
+    #[error("run was shut down via Op")]
+    Shutdown,
+    #[error("agent is busy — another run is in progress")]
+    Busy,
 }
 
 pub(crate) type BoxFutureResult<'a, T, E> = Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>;

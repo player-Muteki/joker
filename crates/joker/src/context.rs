@@ -1,6 +1,10 @@
+use std::sync::Arc;
+
 use thiserror::Error;
 
-use crate::{Content, Conversation, Message, error::BoxFutureResult};
+use crate::{
+    Content, Conversation, Event, Message, NoopObserver, Observer, error::BoxFutureResult,
+};
 
 pub type ContextFuture<'a> = BoxFutureResult<'a, BuiltContext, ContextError>;
 
@@ -368,6 +372,7 @@ pub struct CompactingContextBuilder {
     thresholds: ContextThresholds,
     #[allow(dead_code)]
     inner: Box<dyn ContextBuilder>,
+    observer: Arc<dyn Observer>,
 }
 
 impl CompactingContextBuilder {
@@ -376,12 +381,20 @@ impl CompactingContextBuilder {
         Self {
             thresholds: ContextThresholds::default(),
             inner,
+            observer: Arc::new(NoopObserver),
         }
     }
 
     #[must_use]
     pub fn with_thresholds(mut self, thresholds: ContextThresholds) -> Self {
         self.thresholds = thresholds;
+        self
+    }
+
+    /// Attach an observer for compaction lifecycle events.
+    #[must_use]
+    pub fn with_observer(mut self, observer: Arc<dyn Observer>) -> Self {
+        self.observer = observer;
         self
     }
 }
@@ -409,6 +422,13 @@ impl ContextBuilder for CompactingContextBuilder {
                     return Ok(BuiltContext { messages });
                 }
                 CompactionLevel::Compact => {
+                    let tokens_before = estimate_tokens(&messages);
+                    let _ = self.observer.observe(Event::CompactionStarted {
+                        trigger: "threshold".into(),
+                        current_tokens: tokens_before,
+                        threshold: self.thresholds.compact_tokens,
+                    }).await;
+
                     // Keep summary of old + recent window
                     let recent = self.thresholds.recent_messages;
                     if messages.len() > recent {
@@ -431,10 +451,23 @@ impl ContextBuilder for CompactingContextBuilder {
                         }
                         built.extend(recent_msgs);
                         enforce_limits(&built, input.limits)?;
+
+                        let tokens_after = estimate_tokens(&built);
+                        let _ = self.observer.observe(Event::CompactionDone {
+                            tokens_before,
+                            tokens_after,
+                        }).await;
                         return Ok(BuiltContext { messages: built });
                     }
                 }
                 CompactionLevel::Force => {
+                    let tokens_before = estimate_tokens(&messages);
+                    let _ = self.observer.observe(Event::CompactionStarted {
+                        trigger: "force".into(),
+                        current_tokens: tokens_before,
+                        threshold: self.thresholds.force_tokens,
+                    }).await;
+
                     // Force: only keep system prompts + last K messages
                     let recent = self.thresholds.recent_messages.min(4);
                     let system_msgs: Vec<Message> = messages
@@ -461,6 +494,12 @@ impl ContextBuilder for CompactingContextBuilder {
                     }
                     built.extend(recent_msgs);
                     enforce_limits(&built, input.limits)?;
+
+                    let tokens_after = estimate_tokens(&built);
+                    let _ = self.observer.observe(Event::CompactionDone {
+                        tokens_before,
+                        tokens_after,
+                    }).await;
                     return Ok(BuiltContext { messages: built });
                 }
             }
