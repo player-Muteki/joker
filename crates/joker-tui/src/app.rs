@@ -453,8 +453,9 @@ impl App {
                 self.cancellation_token = None;
                 self.approval_channel = None;
                 match result {
-                    Ok(_) => {
-                        self.status = format!("Idle ({})", self.runtime_config.provider_label())
+                    Ok(outcome) => {
+                        self.status = format!("Idle ({})", self.runtime_config.provider_label());
+                        self.save_current_session(outcome);
                     }
                     Err(error) => {
                         self.status = "Error".into();
@@ -463,6 +464,50 @@ impl App {
                 }
             }
             UiEvent::Tick | UiEvent::Terminal(_) => {}
+        }
+    }
+
+    fn save_current_session(&self, outcome: joker::RunOutcome) {
+        if let Some(ref store) = self.session_store {
+            let store = store.clone();
+            let model = self.runtime_config.current_model();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let label = outcome
+                .conversation
+                .messages()
+                .iter()
+                .find(|m| m.role == joker::Role::User)
+                .and_then(|m| m.content.first())
+                .map(|c| match c {
+                    joker::Content::Text(t) => {
+                        let truncated: String = t.text.chars().take(80).collect();
+                        if t.text.len() > 80 {
+                            format!("{truncated}...")
+                        } else {
+                            truncated
+                        }
+                    }
+                    _ => "conversation".to_string(),
+                })
+                .unwrap_or_else(|| "conversation".to_string());
+
+            let id = format!("{}-{:04x}", now, rand_u16());
+            let data = joker::SessionData {
+                id,
+                label,
+                created_at: now,
+                updated_at: now,
+                model,
+                conversation: outcome.conversation,
+            };
+
+            let store_clone = store.clone();
+            tokio::spawn(async move {
+                let _ = store_clone.save(data).await;
+            });
         }
     }
 
@@ -635,6 +680,19 @@ pub enum ToolState {
     Running,
     Done(String),
     Error(String),
+}
+
+fn rand_u16() -> u16 {
+    // Simple xorshift for non-crypto randomness (session IDs)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let seed = (now.as_nanos() ^ (std::process::id() as u128)) as u64;
+    let mut x = seed;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    (x & 0xFFFF) as u16
 }
 
 fn previous_char_boundary(text: &str, cursor: usize) -> Option<usize> {
