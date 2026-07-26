@@ -57,6 +57,10 @@ impl Tool for WriteFileTool {
         Box::pin(async move {
             let args = parse_args::<WriteFileArgs>(invocation.arguments)?;
             let path = self.workspace.resolve_write(&args.path)?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| ToolError::Execution(format!("create dirs failed: {error}")))?;
+            }
             info!(target: "tool.write_file", path = %args.path, content_len = args.content.len(), "writing file");
             fs::write(&path, &args.content)
                 .map_err(|error| ToolError::Execution(format!("write failed: {error}")))?;

@@ -31,27 +31,55 @@ impl WorkspaceTool {
         Ok(resolved)
     }
 
-    /// Resolve a path for writing — the parent directory must exist and be within workspace.
-    /// The target file may not exist yet (it will be created).
+    /// Resolve a path for writing — the target must be within the workspace.
+    /// Unlike `resolve_read`, intermediate directories need not exist yet.
     pub(crate) fn resolve_write(&self, path: &str) -> Result<PathBuf, ToolError> {
         let root = fs::canonicalize(&self.root)
             .map_err(|error| ToolError::Execution(format!("workspace does not exist: {error}")))?;
         let candidate = root.join(path.trim_start_matches('/'));
 
-        let parent = candidate.parent().ok_or_else(|| {
-            ToolError::InvalidArguments(format!("invalid path: {path}"))
-        })?;
+        // Walk up from the candidate until we find an existing ancestor.
+        // Canonicalize that to verify it's within the workspace, then re-attach
+        // the trailing components that didn't exist yet.
+        let mut components: Vec<&std::path::Path> = Vec::new();
+        let mut ancestor = candidate.as_path();
 
-        let resolved_parent = fs::canonicalize(parent).map_err(|error| {
-            ToolError::Execution(format!("parent directory does not exist: {}: {error}", parent.display()))
-        })?;
+        loop {
+            if ancestor.exists() {
+                let resolved = fs::canonicalize(ancestor)
+                    .map_err(|error| ToolError::Execution(format!(
+                        "failed to resolve path: {}: {error}", ancestor.display()
+                    )))?;
+                if !resolved.starts_with(&root) {
+                    return Err(ToolError::InvalidArguments(format!(
+                        "path escapes workspace: {path}"
+                    )));
+                }
+                let result = components
+                    .into_iter()
+                    .rev()
+                    .fold(resolved, |acc, c| acc.join(c));
+                return Ok(result);
+            }
+            match ancestor.parent() {
+                Some(parent) => {
+                    let last = ancestor
+                        .file_name()
+                        .ok_or_else(|| ToolError::InvalidArguments(format!("invalid path: {path}")))?;
+                    components.push(std::path::Path::new(last));
+                    ancestor = parent;
+                }
+                None => break,
+            }
+        }
 
-        if !resolved_parent.starts_with(&root) {
+        // Nothing existed at all — fall through to root check
+        let root_parent = root.parent().unwrap_or(&root);
+        if !candidate.starts_with(root_parent) {
             return Err(ToolError::InvalidArguments(format!(
                 "path escapes workspace: {path}"
             )));
         }
-
         Ok(candidate)
     }
 }
@@ -85,6 +113,7 @@ pub(crate) fn detect_line_ending(content: &str) -> &str {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn normalize_line_endings(text: &str, line_ending: &str) -> String {
     if line_ending == "\r\n" {
         text.lines()

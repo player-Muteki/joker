@@ -1,6 +1,6 @@
-use std::fs;
 use std::path::PathBuf;
 
+use ignore::WalkBuilder;
 use joker::{
     ApprovalRequirement, Tool, ToolAnnotations, ToolCapability, ToolDefinition, ToolError,
     ToolExecution, ToolFuture, ToolInvocation, ToolName, ToolOutput,
@@ -13,6 +13,7 @@ use crate::workspace::{parse_args, WorkspaceTool};
 #[derive(Debug, Deserialize)]
 struct PathArgs {
     path: Option<String>,
+    recursive: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -36,7 +37,14 @@ impl Tool for ListFilesTool {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Workspace-relative directory path." }
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative directory path. Defaults to workspace root."
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "description": "When true (default), list all files recursively. When false, only direct children."
+                    }
                 }
             }),
             annotations: ToolAnnotations {
@@ -55,19 +63,60 @@ impl Tool for ListFilesTool {
             let path = self
                 .workspace
                 .resolve_read(args.path.as_deref().unwrap_or("."))?;
-            let entries = fs::read_dir(&path)
-                .map_err(|error| ToolError::Execution(error.to_string()))?
-                .map(|entry| {
+            let recursive = args.recursive.unwrap_or(true);
+
+            let root = self.workspace.root.clone();
+
+            let entries = if recursive {
+                let mut walk = WalkBuilder::new(&path);
+                walk.git_ignore(false)
+                    .git_global(false)
+                    .git_exclude(false)
+                    .hidden(false)
+                    .max_depth(None);
+                let mut items = Vec::new();
+                for result in walk.build() {
+                    let entry =
+                        result.map_err(|error| ToolError::Execution(error.to_string()))?;
+                    let relative = entry
+                        .path()
+                        .strip_prefix(&root)
+                        .unwrap_or(entry.path())
+                        .to_string_lossy()
+                        .to_string();
+                    let kind = entry
+                        .file_type()
+                        .map(|ft| {
+                            if ft.is_dir() {
+                                "dir"
+                            } else {
+                                "file"
+                            }
+                        })
+                        .unwrap_or("file");
+                    items.push(json!({
+                        "name": relative,
+                        "kind": kind,
+                    }));
+                }
+                items
+            } else {
+                let dir = std::fs::read_dir(&path)
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                dir.map(|entry| {
                     let entry = entry.map_err(|error| ToolError::Execution(error.to_string()))?;
+                    let name = entry.file_name().to_string_lossy().to_string();
                     let kind = entry
                         .file_type()
                         .map_err(|error| ToolError::Execution(error.to_string()))?;
                     Ok(json!({
-                        "name": entry.file_name().to_string_lossy(),
+                        "name": name,
                         "kind": if kind.is_dir() { "dir" } else { "file" },
                     }))
                 })
-                .collect::<Result<Vec<_>, ToolError>>()?;
+                .collect::<Result<Vec<_>, ToolError>>()?
+            };
+
             Ok(ToolOutput::new(json!({ "entries": entries })))
         })
     }

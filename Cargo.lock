@@ -1063,6 +1063,7 @@ dependencies = [
  "glob",
  "ignore",
  "joker",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
