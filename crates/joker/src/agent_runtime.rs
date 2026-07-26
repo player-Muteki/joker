@@ -5,16 +5,44 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::{
-    Agent, Event, Observer, RunError, RunOutcome, RunRequest, StopReason,
+    Agent, ApprovalResponse, Event, Observer, RunError, RunOutcome, RunRequest, StopReason,
     message_queue::{DrainMode, PendingMessageQueue},
     agent::RunGuard,
 };
 
 /// Commands that can be sent to an active [`AgentRuntime`] run via the Op channel.
+///
+/// Mirrors the OUTLINE.md design (reference: codex SQ/EQ pattern):
+/// - [`Op::SendMessage`] → inject a user message mid-run
+/// - [`Op::Cancel`] → abort the current run
+/// - [`Op::Interrupt`] → inject an interrupt/steer message
+/// - [`Op::Approve`] → resolve a pending approval request
+/// - [`Op::Compact`] → trigger manual compaction
+/// - [`Op::SwitchAgent`] → switch agent profile
+/// - [`Op::Shutdown`] → graceful shutdown
 #[derive(Clone, Debug)]
 pub enum Op {
+    /// Inject a user message that will be processed on the next turn.
+    SendMessage {
+        /// The message content to inject.
+        text: String,
+    },
     /// Cancel the current run via the cancellation token.
     Cancel,
+    /// Inject an interrupt message — processed before the model's next response.
+    Interrupt {
+        /// The interrupt message content.
+        text: String,
+    },
+    /// Resolve a pending approval request (reference: codex SQ/EQ approval channel).
+    Approve {
+        /// `true` to approve, `false` to deny.
+        approved: bool,
+        /// If `true`, remember the decision for the session (no more prompts for this tool).
+        remember_for_session: bool,
+        /// Optional reason for denial.
+        reason: Option<String>,
+    },
     /// Trigger manual context compaction.
     Compact,
     /// Switch to a different agent profile mid-run.
@@ -98,9 +126,29 @@ impl AgentRuntime {
                 loop {
                     while let Ok(op) = rx_op.try_recv() {
                         match op {
+                            Op::SendMessage { text } => {
+                                tracing::info!(target: "agent", msg_preview = %text.chars().take(80).collect::<String>(), "op: send_message");
+                                request.conversation.push(crate::Message::user(text));
+                            }
                             Op::Cancel => {
                                 tracing::info!(target: "agent", "op: cancel");
                                 cancellation_token.cancel();
+                            }
+                            Op::Interrupt { text } => {
+                                tracing::info!(target: "agent", msg_preview = %text.chars().take(80).collect::<String>(), "op: interrupt");
+                                self.steering_queue.enqueue(text);
+                            }
+                            Op::Approve { approved, remember_for_session, reason } => {
+                                tracing::info!(target: "agent", approved, remember_for_session, "op: approve");
+                                if let Some(channel) = &self.agent.approval_channel {
+                                    if approved {
+                                        channel.respond(ApprovalResponse::Approved { remember_for_session });
+                                    } else {
+                                        channel.respond(ApprovalResponse::Denied {
+                                            reason: reason.unwrap_or_else(|| "denied by user".into()),
+                                        });
+                                    }
+                                }
                             }
                             Op::Compact => {
                                 tracing::info!(target: "agent", "op: compact");

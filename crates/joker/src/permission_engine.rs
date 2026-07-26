@@ -11,19 +11,36 @@
 //!    all mutating tools regardless of user config.
 //! 2. **Agent Disabled** — tool hidden from model entirely.
 //! 3. **Agent AutoAccept** — tool runs without asking.
-//! 4. **Session grant** — "Allow for this session" temporary override.
+//! 4. **Session grant** — "Allow for this session" temporary override (persisted to disk).
 //! 5. **Agent Ask** — tool requires interactive approval.
 //! 6. **Default** — fall back to tool annotation default.
+//!
+//! ## Persistence
+//!
+//! Session grants are persisted to a JSON file (`grants.json` in the joker config dir)
+//! so "Allow for Session" decisions survive restarts. The file is loaded on engine
+//! construction and saved on every grant mutation (reference: pi's auth.json pattern).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::policy::{SharedApprovalChannel, ToolDecision, ToolPolicy, ToolPolicyRequest};
 use crate::tool::{ToolName, ToolRegistry};
 use crate::policy::PolicyFuture;
+
+/// Returns the current unix timestamp in millis for serialization.
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_millis() as u64
+}
 
 /// Per-agent permission setting for a single tool.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -101,30 +118,93 @@ pub enum PermissionDecision {
     },
 }
 
-/// A temporary session-scoped grant.
-#[derive(Clone, Debug)]
+/// A temporary session-scoped grant persisted to disk.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct SessionGrant {
     agent_name: String,
-    tool_name: ToolName,
-    #[allow(dead_code)]
-    granted_at: std::time::Instant,
+    tool_name: String,
+    /// Unix timestamp in millis when the grant was created.
+    #[serde(default = "now_millis")]
+    granted_at_ms: u64,
 }
 
 /// The permission engine: owns agent profiles, session grants, and produces
 /// per-agent [`ToolPolicy`] implementations and filtered [`ToolRegistry`] instances.
+///
+/// Session grants are persisted to `grants_path` so "Allow for Session" decisions
+/// survive restarts (reference: pi's auth.json pattern).
 #[derive(Clone, Debug)]
 pub struct PermissionEngine {
     agent_permissions: HashMap<String, AgentPermission>,
     session_grants: Vec<SessionGrant>,
+    /// Path to the grants persistence file.
+    grants_path: Option<PathBuf>,
+    /// Quick-lookup index: (agent, tool) -> bool
+    grant_index: HashSet<(String, String)>,
 }
 
 impl PermissionEngine {
-    /// Create an empty permission engine.
+    /// Create an empty permission engine with no persistence.
     #[must_use]
     pub fn new() -> Self {
         Self {
             agent_permissions: HashMap::new(),
             session_grants: Vec::new(),
+            grants_path: None,
+            grant_index: HashSet::new(),
+        }
+    }
+
+    /// Create a permission engine that persists session grants to a file.
+    ///
+    /// Loads existing grants from the file if it exists (pi-style persistence).
+    #[must_use]
+    pub fn with_persistence(grants_path: impl Into<PathBuf>) -> Self {
+        let path = grants_path.into();
+        let grants = if path.exists() {
+            fs::read_to_string(&path)
+                .ok()
+                .and_then(|data| serde_json::from_str::<Vec<SessionGrant>>(&data).ok())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let grant_index = grants.iter()
+            .map(|g| (g.agent_name.clone(), g.tool_name.clone()))
+            .collect();
+        info!(target: "permission", count = grants.len(), path = %path.display(), "loaded persisted session grants");
+        Self {
+            agent_permissions: HashMap::new(),
+            session_grants: grants,
+            grants_path: Some(path),
+            grant_index,
+        }
+    }
+
+    /// Persist the current session grants to disk (pi-style auth.json pattern).
+    fn persist_grants(&self) {
+        if let Some(path) = &self.grants_path {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let data: Vec<SessionGrant> = self.session_grants.clone();
+            match serde_json::to_string_pretty(&data) {
+                Ok(json) => {
+                    fs::write(path, &json).unwrap_or_else(|e| {
+                        warn!(target: "permission", path = %path.display(), error = %e, "failed to persist session grants");
+                    });
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(metadata) = fs::metadata(path) {
+                            let mut perms = metadata.permissions();
+                            perms.set_mode(0o600);
+                            let _ = fs::set_permissions(path, perms);
+                        }
+                    }
+                }
+                Err(e) => warn!(target: "permission", error = %e, "failed to serialize session grants"),
+            }
         }
     }
 
@@ -135,32 +215,60 @@ impl PermissionEngine {
     }
 
     /// Temporarily grant a tool for the remainder of the session.
+    /// Persists immediately to disk.
     pub fn grant_session(&mut self, agent_name: &str, tool_name: ToolName) {
+        let key = (agent_name.to_string(), tool_name.to_string());
+        if self.grant_index.contains(&key) {
+            return;
+        }
         debug!(target: "permission", agent = %agent_name, tool = %tool_name.as_str(), "session grant added");
         self.session_grants.push(SessionGrant {
             agent_name: agent_name.to_string(),
-            tool_name,
-            granted_at: std::time::Instant::now(),
+            tool_name: tool_name.to_string(),
+            granted_at_ms: now_millis(),
         });
+        self.grant_index.insert(key);
+        self.persist_grants();
+    }
+
+    /// Revoke all session grants for a given agent.
+    pub fn revoke_session_grants(&mut self, agent_name: &str) {
+        self.session_grants.retain(|g| g.agent_name != agent_name);
+        self.grant_index.retain(|(a, _)| a != agent_name);
+        self.persist_grants();
+        info!(target: "permission", agent = %agent_name, "session grants revoked");
+    }
+
+    /// Check if a session grant exists.
+    fn has_session_grant(&self, agent_name: &str, tool_name: &ToolName) -> bool {
+        self.grant_index.contains(&(agent_name.to_string(), tool_name.to_string()))
     }
 
     /// Check if a resource path matches a glob-like pattern.
+    ///
+    /// Supports `*` (single segment), `**` (any depth), `**/` (anywhere).
+    /// Reference: CodeWhale's prefix-based matching + OpenCode's wildcard rules.
     fn path_matches(resource: &str, pattern: &str) -> bool {
         if pattern == "*" || pattern == "**" {
             return true;
         }
+        // `**/` prefix: match anywhere in path
         if let Some(rest) = pattern.strip_prefix("**/") {
-            // Match anywhere in path
-            return resource.contains(&rest[..rest.len().saturating_sub(1)])
-                || resource.ends_with(rest.trim_end_matches('*'))
-                || resource.starts_with(rest.trim_end_matches('*'));
-        }
-        if let Some((prefix, suffix)) = pattern.split_once('*') {
-            if suffix.is_empty() {
-                return resource.starts_with(prefix) || resource == prefix;
+            if rest.contains('*') {
+                let prefix = rest.trim_end_matches('*');
+                return resource.contains(prefix);
             }
+            return resource.contains(rest) || resource.ends_with(rest);
+        }
+        // `*` suffix: match prefix (e.g. "*.md")
+        if let Some(prefix) = pattern.strip_prefix('*') {
+            return resource.ends_with(prefix);
+        }
+        // `*` infix: match prefix + suffix (e.g. "plans/*.md")
+        if let Some((prefix, suffix)) = pattern.split_once('*') {
             return resource.starts_with(prefix) && resource.ends_with(suffix);
         }
+        // Exact match
         resource == pattern
     }
 
@@ -239,12 +347,8 @@ impl PermissionEngine {
                 return PermissionDecision::Allow;
             }
 
-        // Level 4: Session grant
-        if self
-            .session_grants
-            .iter()
-            .any(|g| g.agent_name == agent_name && g.tool_name == *tool_name)
-        {
+        // Level 4: Session grant (fast index lookup)
+        if self.has_session_grant(agent_name, tool_name) {
             return PermissionDecision::Allow;
         }
 
@@ -341,6 +445,8 @@ impl PermissionEngine {
             engine: Self {
                 agent_permissions: self.agent_permissions.clone(),
                 session_grants: self.session_grants.clone(),
+                grants_path: self.grants_path.clone(),
+                grant_index: self.grant_index.clone(),
             },
             agent_name,
             approval_channel: None,
@@ -358,6 +464,8 @@ impl PermissionEngine {
             engine: Self {
                 agent_permissions: self.agent_permissions.clone(),
                 session_grants: self.session_grants.clone(),
+                grants_path: self.grants_path.clone(),
+                grant_index: self.grant_index.clone(),
             },
             agent_name,
             approval_channel: Some(approval_channel),

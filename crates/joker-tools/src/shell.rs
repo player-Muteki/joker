@@ -1,8 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
-use std::os::unix::process::CommandExt;
 use tokio::io::AsyncReadExt;
 use tracing::*;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use joker::{
     ApprovalRequirement, Tool, ToolAnnotations, ToolCapability, ToolDefinition, ToolError,
@@ -139,8 +141,8 @@ impl Tool for ShellTool {
             let safety_warnings = Self::analyse_command_safety(&command_str);
 
             if args.bg.unwrap_or(false) {
-                let child = std::process::Command::new("sh")
-                    .arg("-c")
+                let child = std::process::Command::new(shell_program())
+                    .arg(shell_arg())
                     .arg(&command_str)
                     .current_dir(&root)
                     .spawn()
@@ -158,9 +160,9 @@ impl Tool for ShellTool {
             }
 
             info!(target: "tool.shell", command_preview = %command_str, "executing command");
-            let mut cmd = tokio::process::Command::new("sh");
-            cmd.as_std_mut().process_group(0);
-            cmd.arg("-c")
+            let mut cmd = tokio::process::Command::new(shell_program());
+            set_process_group(cmd.as_std_mut());
+            cmd.arg(shell_arg())
                 .arg(&command_str)
                 .current_dir(&root)
                 .stdout(std::process::Stdio::piped())
@@ -206,7 +208,7 @@ impl Tool for ShellTool {
                     return Err(ToolError::Execution(format!("command failed: {e}")));
                 }
                 Err(_) => {
-                    kill_process_group(child.id().unwrap_or(0));
+                    kill_process_tree(child.id().unwrap_or(0));
                     let _ = child.wait().await;
                     let out = stdout_task.await.unwrap_or_default();
                     let err = stderr_task.await.unwrap_or_default();
@@ -293,14 +295,43 @@ fn build_ring_buffer(stdout: &[u8], stderr: &[u8], max_stdout: usize, max_stderr
     (stdout_result, stderr_result, spill_path)
 }
 
-fn kill_process_group(pid: u32) {
-    let _ = std::process::Command::new("kill")
-        .arg("--")
-        .arg(format!("-{pid}"))
-        .status();
-    let _ = std::process::Command::new("kill")
-        .arg("-9")
-        .arg("--")
-        .arg(format!("-{pid}"))
-        .status();
+fn shell_program() -> &'static str {
+    if cfg!(windows) { "cmd.exe" } else { "sh" }
+}
+
+fn shell_arg() -> &'static str {
+    if cfg!(windows) { "/C" } else { "-c" }
+}
+
+#[cfg(unix)]
+fn set_process_group(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+}
+
+#[cfg(windows)]
+fn set_process_group(_cmd: &mut std::process::Command) {}
+
+fn kill_process_tree(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("kill")
+            .arg("--")
+            .arg(format!("-{pid}"))
+            .status();
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg("--")
+            .arg(format!("-{pid}"))
+            .status();
+    }
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .arg("/F")
+            .arg("/T")
+            .arg("/PID")
+            .arg(pid.to_string())
+            .status();
+    }
 }
