@@ -152,9 +152,11 @@ impl PermissionEngine {
                 || resource.ends_with(rest.trim_end_matches('*'))
                 || resource.starts_with(rest.trim_end_matches('*'));
         }
-        if pattern.contains('*') {
-            let prefix = pattern.trim_end_matches('*');
-            return resource.starts_with(prefix) || resource == prefix.trim_end_matches('*');
+        if let Some((prefix, suffix)) = pattern.split_once('*') {
+            if suffix.is_empty() {
+                return resource.starts_with(prefix) || resource == prefix;
+            }
+            return resource.starts_with(prefix) && resource.ends_with(suffix);
         }
         resource == pattern
     }
