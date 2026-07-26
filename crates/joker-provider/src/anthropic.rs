@@ -15,6 +15,7 @@ use std::{
 
 use futures_core::Stream;
 use futures_util::StreamExt;
+use tracing::{error, info, trace, warn};
 use joker::{
     Content, Message, Model, ModelError, ModelFuture, ModelRequest, ModelResponseEvent,
     ModelStream, Role, StopReason, ToolCall, ToolDefinition, Usage,
@@ -122,25 +123,30 @@ impl Model for AnthropicModel {
         let client = self.client.clone();
 
         Box::pin(async move {
+            info!(target: "provider", provider = "anthropic", model = %config.model, "streaming request");
             let body = build_request_body(&config.model, &request);
-            let response = client
-                .post(config.messages_url())
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| ModelError::Stream(e.to_string()))?;
-
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                return Err(ModelError::Stream(format!(
-                    "Anthropic request failed with {status}: {body}"
-                )));
+            let mut last_error = None;
+            for attempt in 1..=2 {
+                match client.post(config.messages_url()).json(&body).send().await {
+                    Ok(response) => {
+                        if !response.status().is_success() {
+                            let status = response.status();
+                            let body = response.text().await.unwrap_or_default();
+                            return Err(ModelError::Stream(format!(
+                                "Anthropic request failed with {status}: {body}"
+                            )));
+                        }
+                        let (tx, rx) = mpsc::unbounded_channel();
+                        tokio::spawn(parse_sse_stream(response, tx));
+                        return Ok(Box::new(ReceiverStream { rx }) as ModelStream);
+                    }
+                    Err(error) => {
+                        warn!(target: "provider", provider = "anthropic", attempt, max_attempts = 2, error = %error, "request failed, retrying");
+                        last_error = Some(error);
+                    }
+                }
             }
-
-            let (tx, rx) = mpsc::unbounded_channel();
-            tokio::spawn(parse_sse_stream(response, tx));
-            Ok(Box::new(ReceiverStream { rx }) as ModelStream)
+            Err(ModelError::Stream(last_error.unwrap().to_string()))
         })
     }
 }
@@ -713,6 +719,7 @@ async fn parse_sse_stream(
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
+                error!(target: "provider", provider = "anthropic", error = %e, "stream chunk error");
                 let _ = tx.send(Err(ModelError::Stream(e.to_string())));
                 return;
             }
@@ -722,12 +729,12 @@ async fn parse_sse_stream(
         for item in parser.push(&text) {
             match item {
                 ParsedEvent::Event(ev) => {
+                    trace!(target: "provider", provider = "anthropic", event = ?ev, "stream event");
                     if tx.send(Ok(ev)).is_err() {
                         return;
                     }
                 }
                 ParsedEvent::Finish { stop_reason, usage } => {
-                    // Flush pending text/reasoning blocks before finish
                     for ev in parser.finish() {
                         if let ParsedEvent::Event(ev) = ev
                             && tx.send(Ok(ev)).is_err() {
@@ -743,6 +750,7 @@ async fn parse_sse_stream(
                     }
                 }
                 ParsedEvent::Error(msg) => {
+                    error!(target: "provider", provider = "anthropic", error = %msg, "stream parse error");
                     let _ = tx.send(Err(ModelError::Stream(msg)));
                     return;
                 }
@@ -750,7 +758,6 @@ async fn parse_sse_stream(
         }
     }
 
-    // Flush remaining pending content
     for ev in parser.finish() {
         if let ParsedEvent::Event(ev) = ev
             && tx.send(Ok(ev)).is_err() {

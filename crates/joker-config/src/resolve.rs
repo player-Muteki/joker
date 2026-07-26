@@ -1,6 +1,7 @@
 //! Configuration resolution — merges file config with CLI overrides into a [`RuntimeConfig`].
 
 use joker_provider::Route;
+use tracing::info;
 
 use crate::error::ConfigError;
 use crate::provider_selection::ProviderSelection;
@@ -12,6 +13,8 @@ pub fn resolve_config(
     file: FileConfig,
     overrides: ConfigOverrides,
 ) -> Result<RuntimeConfig, ConfigError> {
+    let provider_count = file.providers.len();
+    info!(target: "config", provider_count, "resolving configuration");
     let mut config = RuntimeConfig::default();
     config.scripted_response = overrides
         .scripted_response

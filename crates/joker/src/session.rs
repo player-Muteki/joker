@@ -13,6 +13,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tracing::{debug, error, info};
 
 use crate::{Conversation, error::BoxFutureResult};
 
@@ -155,13 +156,15 @@ impl JsonlSessionStore {
 impl SessionStore for JsonlSessionStore {
     fn save(&self, data: SessionData) -> SessionFuture<'_> {
         let path = self.path_for(&data.id);
+        let session_id = data.id.clone();
+        let msg_count = data.conversation.messages().len();
         Box::pin(async move {
+            info!(target: "session", session_id = %session_id, message_count = msg_count, "saving session");
             let mut lines = Vec::new();
             let now = Self::now();
-            // Header line: metadata
             let header = serde_json::json!({
                 "#": "session",
-                "id": data.id,
+                "id": session_id,
                 "label": data.label,
                 "created_at": data.created_at,
                 "updated_at": now,
@@ -170,25 +173,29 @@ impl SessionStore for JsonlSessionStore {
                 "parent_id": data.parent_id,
                 "root_id": data.root_id,
             });
-            lines.push(serde_json::to_string(&header).map_err(|e| SessionError::Serde(e.to_string()))?);
+            lines.push(serde_json::to_string(&header).map_err(|e| {
+                error!(target: "session", session_id = %session_id, error = %e, "failed to serialize session header");
+                SessionError::Serde(e.to_string())
+            })?);
 
-            // Message lines
             for msg in data.conversation.messages() {
                 let line = serde_json::to_string(msg).map_err(|e| SessionError::Serde(e.to_string()))?;
                 lines.push(line);
             }
 
             let content = lines.join("\n");
-            fs::write(&path, &content).map_err(|e| SessionError::Io(e.to_string()))?;
+            fs::write(&path, &content).map_err(|e| {
+                error!(target: "session", session_id = %session_id, error = %e, "failed to write session file");
+                SessionError::Io(e.to_string())
+            })?;
 
-            // Update index
             let mut index = self.load_index();
-            if let Some(existing) = index.iter_mut().find(|s| s.id == data.id) {
+            if let Some(existing) = index.iter_mut().find(|s| s.id == session_id) {
                 existing.updated_at = now;
                 existing.message_count = data.conversation.messages().len();
             } else {
                 index.push(SessionInfo {
-                    id: data.id.clone(),
+                    id: session_id.clone(),
                     label: data.label,
                     created_at: data.created_at,
                     updated_at: now,
@@ -199,7 +206,10 @@ impl SessionStore for JsonlSessionStore {
                     message_count: data.conversation.messages().len(),
                 });
             }
-            self.save_index(&index)?;
+            self.save_index(&index).map_err(|e| {
+                error!(target: "session", session_id = %session_id, error = %e, "failed to save session index");
+                e
+            })?;
 
             Ok(())
         })
@@ -213,20 +223,26 @@ impl SessionStore for JsonlSessionStore {
         let meta = index.into_iter().find(|s| s.id == id);
 
         Box::pin(async move {
+            info!(target: "session", session_id = %id_copy, "loading session");
             if !path.exists() {
                 return Ok(None);
             }
             let content =
-                fs::read_to_string(&path).map_err(|e| SessionError::Io(e.to_string()))?;
+                fs::read_to_string(&path).map_err(|e| {
+                    error!(target: "session", session_id = %id_copy, error = %e, "failed to read session file");
+                    SessionError::Io(e.to_string())
+                })?;
             let mut lines: Vec<&str> = content.lines().collect();
             if lines.is_empty() {
                 return Ok(None);
             }
 
-            // Parse header
             let header_line = lines.remove(0);
             let header: serde_json::Value =
-                serde_json::from_str(header_line).map_err(|e| SessionError::Serde(e.to_string()))?;
+                serde_json::from_str(header_line).map_err(|e| {
+                    error!(target: "session", session_id = %id_copy, error = %e, "failed to parse session header");
+                    SessionError::Serde(e.to_string())
+                })?;
 
             let label = header["label"].as_str().unwrap_or("").to_string();
             let created_at = header["created_at"].as_u64().unwrap_or(0);
@@ -235,7 +251,6 @@ impl SessionStore for JsonlSessionStore {
             let parent_id = header.get("parent_id").and_then(|v| v.as_str()).map(String::from);
             let root_id = header.get("root_id").and_then(|v| v.as_str()).unwrap_or(&id_copy).to_string();
 
-            // Parse messages
             let mut conversation = Conversation::new();
             for line in lines {
                 if let Ok(msg) = serde_json::from_str::<crate::Message>(line) {
@@ -244,7 +259,7 @@ impl SessionStore for JsonlSessionStore {
             }
 
             let meta = meta.unwrap_or(SessionInfo {
-                id: id.clone(),
+                id: id_copy.clone(),
                 label: label.clone(),
                 created_at,
                 updated_at: created_at,
@@ -255,8 +270,9 @@ impl SessionStore for JsonlSessionStore {
                 message_count: conversation.messages().len(),
             });
 
+            info!(target: "session", session_id = %id_copy, message_count = conversation.messages().len(), "session loaded");
             Ok(Some(SessionData {
-                id,
+                id: id_copy,
                 label,
                 created_at,
                 updated_at: meta.updated_at,
@@ -272,6 +288,7 @@ impl SessionStore for JsonlSessionStore {
     fn list(&self) -> SessionListFuture<'_> {
         let index = self.load_index();
         Box::pin(async move {
+            debug!(target: "session", count = index.len(), "listing sessions");
             let mut sessions = index;
             sessions.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
             Ok(sessions)
@@ -282,10 +299,10 @@ impl SessionStore for JsonlSessionStore {
         let id = id.to_string();
         let path = self.path_for(&id);
         Box::pin(async move {
+            info!(target: "session", session_id = %id, "deleting session");
             let _ = fs::remove_file(&path);
             let mut index = self.load_index();
             index.retain(|s| s.id != id);
-            // Also remove children (forks) recursively
             let children: Vec<String> = index.iter()
                 .filter(|s| s.parent_id.as_deref() == Some(&id))
                 .map(|s| s.id.clone())
@@ -294,7 +311,10 @@ impl SessionStore for JsonlSessionStore {
                 let _ = fs::remove_file(self.path_for(&child_id));
             }
             index.retain(|s| s.parent_id.as_deref() != Some(&id));
-            self.save_index(&index)?;
+            self.save_index(&index).map_err(|e| {
+                error!(target: "session", session_id = %id, error = %e, "failed to save index after deletion");
+                e
+            })?;
             Ok(())
         })
     }
@@ -304,10 +324,13 @@ impl SessionStore for JsonlSessionStore {
     fn fork(&self, parent_id: &str, label: String, agent_name: String, model: String) -> SessionLoadFuture<'_> {
         let parent_id = parent_id.to_string();
         let id = format!("fork-{}-{}", parent_id, Self::now());
+        info!(target: "session", parent_id = %parent_id, child_id = %id, "forking session");
         Box::pin(async move {
-            // Load parent
             let parent = self.load(&parent_id).await?
-                .ok_or_else(|| SessionError::NotFound(parent_id.clone()))?;
+                .ok_or_else(|| {
+                    error!(target: "session", parent_id = %parent_id, "parent session not found for fork");
+                    SessionError::NotFound(parent_id.clone())
+                })?;
 
             // Determine root_id: use parent's root_id or parent's own id
             let root_id = if parent.root_id.is_empty() { parent_id.clone() } else { parent.root_id.clone() };

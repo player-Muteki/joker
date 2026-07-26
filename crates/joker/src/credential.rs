@@ -5,6 +5,7 @@ use std::{
 };
 
 use thiserror::Error;
+use tracing::{debug, info};
 
 /// Errors from credential operations.
 #[derive(Debug, Error)]
@@ -67,6 +68,7 @@ impl CredentialStore {
     /// This mirrors pi's `getApiKey()` priority: store > env.
     #[must_use]
     pub fn get(&self, provider_id: &str) -> Option<String> {
+        debug!(target: "credential", provider = %provider_id, "getting API key");
         // Try stored credential first
         if let Some(key) = self.credentials.get(provider_id) {
             return Some(key.clone());
@@ -79,12 +81,14 @@ impl CredentialStore {
     /// Set the API key for a provider (in-memory).
     /// Call `save()` to persist to disk.
     pub fn set(&mut self, provider_id: &str, api_key: String) {
+        info!(target: "credential", provider = %provider_id, "setting API key");
         self.credentials.insert(provider_id.to_string(), api_key);
         self.dirty = true;
     }
 
     /// Remove a credential.
     pub fn remove(&mut self, provider_id: &str) {
+        info!(target: "credential", provider = %provider_id, "deleting API key");
         self.credentials.remove(provider_id);
         self.dirty = true;
     }

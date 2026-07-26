@@ -1,6 +1,7 @@
 //! Provider selection — maps provider names to routes or scripted mode.
 
 use joker_provider::{Route, ALIBABA, ANTHROPIC, BAIDU, DEEPSEEK, GOOGLE, MOONSHOT, ZHIPUAI};
+use tracing::info;
 
 use crate::error::ConfigError;
 
@@ -27,6 +28,7 @@ impl ProviderSelection {
 
     /// Select a provider by its well-known name (e.g. `"deepseek"`, `"anthropic"`, `"openai-compatible"`).
     pub fn preset(provider: &str) -> Result<Self, ConfigError> {
+        info!(target: "config", provider = %provider, "selecting provider");
         match provider.trim().to_ascii_lowercase().as_str() {
             "" | "scripted" => Ok(Self::scripted()),
             "deepseek" => Ok(Self::Route(DEEPSEEK.into_route(Some("deepseek-chat")))),

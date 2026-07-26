@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use tokio::sync::mpsc;
 
@@ -71,6 +72,13 @@ impl AgentRuntime {
         let cancellation_token = request.cancellation_token.clone().unwrap_or_default();
         observe_event(&self.agent.observer, Event::RunStarted).await;
 
+        let _start = Instant::now();
+        tracing::info!(
+            target: "agent",
+            input_len = request.input.as_ref().map_or(0, |s| s.len()),
+            "run started"
+        );
+
         let turn_id = format!("turn-{}", now_millis());
         let model_id = "unknown".to_string();
         let mut stop_reason = StopReason::Stop;
@@ -86,11 +94,16 @@ impl AgentRuntime {
             let mut tool_calls = 0usize;
 
             loop {
+                tracing::debug!(target: "agent", steps, tool_calls, "turn iteration");
                 loop {
                     while let Ok(op) = rx_op.try_recv() {
                         match op {
-                            Op::Cancel => cancellation_token.cancel(),
+                            Op::Cancel => {
+                                tracing::info!(target: "agent", "op: cancel");
+                                cancellation_token.cancel();
+                            }
                             Op::Compact => {
+                                tracing::info!(target: "agent", "op: compact");
                                 observe_event(&self.agent.observer, Event::CompactionStarted {
                                     trigger: "manual".into(), current_tokens: 0, threshold: 0,
                                 }).await;
@@ -99,11 +112,15 @@ impl AgentRuntime {
                                 }).await;
                             }
                             Op::SwitchAgent { name } => {
+                                tracing::info!(target: "agent", name = %name, "op: switch_agent");
                                 observe_event(&self.agent.observer, Event::AgentSwitched {
                                     from: String::new(), to: name,
                                 }).await;
                             }
-                            Op::Shutdown => return Err(RunError::Shutdown),
+                            Op::Shutdown => {
+                                tracing::info!(target: "agent", "op: shutdown");
+                                return Err(RunError::Shutdown);
+                            }
                         }
                     }
 
@@ -153,22 +170,27 @@ impl AgentRuntime {
             Ok(RunOutcome { conversation: request.conversation, stop_reason: StopReason::Stop })
         }.await;
 
-        if let Ok(outcome) = &result {
-            stop_reason = outcome.stop_reason;
-        } else if matches!(result, Err(RunError::Cancelled)) {
-            stop_reason = StopReason::Cancelled;
+        match &result {
+            Ok(outcome) => stop_reason = outcome.stop_reason,
+            Err(RunError::Cancelled) => stop_reason = StopReason::Cancelled,
+            Err(e) => tracing::error!(target: "agent", ?e, "run failed"),
         }
+        let duration_ms = _start.elapsed().as_millis() as u64;
+        tracing::info!(target: "agent", ?stop_reason, duration_ms, "run finished");
         observe_event(&self.agent.observer, Event::RunFinished { stop_reason }).await;
         result
     }
 }
 
 async fn observe_event(observer: &Arc<dyn Observer>, event: Event) {
+    tracing::trace!(target: "event", ?event);
     let _ = observer.observe(event).await;
 }
 
 async fn observe_limit(observer: &Arc<dyn Observer>, reason: impl Into<String>) {
-    observe_event(observer, Event::LimitReached { reason: reason.into() }).await;
+    let reason = reason.into();
+    tracing::warn!(target: "agent", %reason, "limit reached");
+    observe_event(observer, Event::LimitReached { reason }).await;
 }
 
 fn now_millis() -> u64 {

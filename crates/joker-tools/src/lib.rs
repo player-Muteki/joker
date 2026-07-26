@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::*;
 
 /// Workspace resolution utilities.
 pub mod workspace;
@@ -80,6 +81,7 @@ pub fn readonly_tool_registry(workspace: impl Into<PathBuf>) -> Result<ToolRegis
     registry.insert(ReadFileTool::new(workspace.clone()))?;
     registry.insert(GrepTool::new(workspace.clone()))?;
     registry.insert(GlobTool::new(workspace.clone()))?;
+    debug!(target: "tools", count = 4, "readonly tool registry created");
     Ok(registry)
 }
 
@@ -105,6 +107,7 @@ pub fn writeable_tool_registry(
     registry.insert(ApplyPatchTool::new(workspace.clone()))?;
     registry.insert(FetchUrlTool::new())?;
     registry.insert(TodoWriteTool::new(workspace.clone()))?;
+    debug!(target: "tools", count = 10, "writeable tool registry created");
     Ok(registry)
 }
 
@@ -137,5 +140,6 @@ pub fn all_tool_registry(
     registry.insert(MemoryReadTool::new(workspace.clone()))?;
     registry.insert(MemoryWriteTool::new(workspace.clone()))?;
 
+    info!(target: "tools", count = registry.definitions().len(), "full tool registry created");
     Ok(registry)
 }

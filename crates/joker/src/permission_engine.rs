@@ -19,6 +19,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tracing::{debug, info, warn};
+
 use crate::policy::{SharedApprovalChannel, ToolDecision, ToolPolicy, ToolPolicyRequest};
 use crate::tool::{ToolName, ToolRegistry};
 use crate::policy::PolicyFuture;
@@ -134,6 +136,7 @@ impl PermissionEngine {
 
     /// Temporarily grant a tool for the remainder of the session.
     pub fn grant_session(&mut self, agent_name: &str, tool_name: ToolName) {
+        debug!(target: "permission", agent = %agent_name, tool = %tool_name.as_str(), "session grant added");
         self.session_grants.push(SessionGrant {
             agent_name: agent_name.to_string(),
             tool_name,
@@ -170,6 +173,7 @@ impl PermissionEngine {
         is_mutating: bool,
         tool_args: Option<&serde_json::Value>,
     ) -> PermissionDecision {
+        debug!(target: "permission", agent = %agent_name, tool = %tool_name.as_str(), mutating = is_mutating, "evaluating permission");
         let profile = self.agent_permissions.get(agent_name);
 
         // Level 1: Hard permission rules (path-level, MiMo-Code style)
@@ -187,12 +191,12 @@ impl PermissionEngine {
                     if tool_matches && resource_matches {
                         match rule.setting {
                             PermissionSetting::Disabled => {
-                                return PermissionDecision::Deny {
-                                    reason: format!(
-                                        "hard-disabled by rule: tool '{tool_name}' resource '{resource}' pattern '{}'",
-                                        rule.resource_pattern
-                                    ),
-                                };
+                                let reason = format!(
+                                    "hard-disabled by rule: tool '{tool_name}' resource '{resource}' pattern '{}'",
+                                    rule.resource_pattern
+                                );
+                                warn!(target: "permission", agent = %agent_name, tool = %tool_name.as_str(), reason = %reason, "permission denied");
+                                return PermissionDecision::Deny { reason };
                             }
                             PermissionSetting::AutoAccept => return PermissionDecision::Allow,
                             PermissionSetting::Ask => {} // fall through
@@ -206,11 +210,11 @@ impl PermissionEngine {
                 match hard {
                     PermissionSetting::Disabled => {
                         if is_mutating {
-                            return PermissionDecision::Deny {
-                                reason: format!(
-                                    "tool '{tool_name}' is hard-disabled for agent '{agent_name}'"
-                                ),
-                            };
+                            let reason = format!(
+                                "tool '{tool_name}' is hard-disabled for agent '{agent_name}'"
+                            );
+                            warn!(target: "permission", agent = %agent_name, tool = %tool_name.as_str(), reason = %reason, "permission denied");
+                            return PermissionDecision::Deny { reason };
                         }
                     }
                     PermissionSetting::AutoAccept => return PermissionDecision::Allow,
@@ -222,11 +226,11 @@ impl PermissionEngine {
         // Level 2: Agent-level Disabled
         if let Some(profile) = profile
             && let Some(PermissionSetting::Disabled) = profile.tool_permissions.get(tool_name) {
-                return PermissionDecision::Deny {
-                    reason: format!(
-                        "tool '{tool_name}' is disabled for agent '{agent_name}'"
-                    ),
-                };
+                let reason = format!(
+                    "tool '{tool_name}' is disabled for agent '{agent_name}'"
+                );
+                warn!(target: "permission", agent = %agent_name, tool = %tool_name.as_str(), reason = %reason, "permission denied");
+                return PermissionDecision::Deny { reason };
             }
 
         // Level 3: Agent-level AutoAccept
@@ -326,6 +330,7 @@ impl PermissionEngine {
                 let _ = filtered.insert_arc(tool);
             }
         }
+        info!(target: "permission", agent = %agent_name, tool_count = filtered.definitions().len(), "tools materialized for agent");
         filtered
     }
 

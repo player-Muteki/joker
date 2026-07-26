@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use tracing::info;
 
 use crate::error::ConfigError;
 use crate::runtime::RuntimeConfig;
@@ -35,6 +36,7 @@ impl ConfigStore {
 
     /// Load and resolve the configuration, applying CLI overrides on top.
     pub fn load(&self, overrides: ConfigOverrides) -> Result<RuntimeConfig, ConfigError> {
+        info!(target: "config", path = %self.path.display(), "loading configuration");
         let file = if self.path.exists() {
             let raw = fs::read_to_string(&self.path)?;
             toml::from_str::<FileConfig>(&raw)?
@@ -46,6 +48,7 @@ impl ConfigStore {
 
     /// Save a [`RuntimeConfig`] to the configuration file as TOML.
     pub fn save(&self, config: &RuntimeConfig) -> Result<(), ConfigError> {
+        info!(target: "config", path = %self.path.display(), "saving configuration");
         let file = config.to_file_config();
         let raw = toml::to_string_pretty(&file)?;
         fs::write(&self.path, raw)?;

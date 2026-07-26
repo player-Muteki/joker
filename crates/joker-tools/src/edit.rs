@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use tracing::*;
 
 use joker::{
     ApprovalRequirement, Tool, ToolAnnotations, ToolCapability, ToolDefinition, ToolError,
@@ -19,10 +20,14 @@ pub fn edit_file(path: &Path, old_string: &str, new_string: &str, replace_all: b
     let normalized_new = normalize_line_endings(new_string, line_ending);
 
     let count = content.matches(old_string).count();
+    info!(target: "tool.edit_file", path = %path.display(), "editing file");
+    debug!(target: "tool.edit_file", match_count = count, replace_all, "replacement analysis");
     if count == 0 {
+        warn!(target: "tool.edit_file", path = %path.display(), "old_string not found in file");
         return Err(ToolError::InvalidArguments("old_string not found in file".into()));
     }
     if count > 1 && !replace_all {
+        error!(target: "tool.edit_file", path = %path.display(), match_count = count, "old_string found multiple times, replace_all not set");
         return Err(ToolError::InvalidArguments(format!(
             "old_string found {count} times in file. Use replace_all=true to replace all occurrences, or provide more surrounding context to make the match unique."
         )));
@@ -37,6 +42,7 @@ pub fn edit_file(path: &Path, old_string: &str, new_string: &str, replace_all: b
     let current = fs::read_to_string(path)
         .map_err(|error| ToolError::Execution(format!("stale check read: {error}")))?;
     if current != content {
+        warn!(target: "tool.edit_file", path = %path.display(), "stale file detected — file changed between read and write");
         return Err(ToolError::Execution("file changed between read and write — re-read and try again".into()));
     }
 

@@ -234,7 +234,8 @@ pub enum Event {
 pub struct NoopObserver;
 
 impl Observer for NoopObserver {
-    fn observe(&self, _event: Event) -> ObserverFuture<'_> {
+    fn observe(&self, event: Event) -> ObserverFuture<'_> {
+        tracing::trace!(target: "event", ?event, "noop observe");
         Box::pin(async { Ok(()) })
     }
 }
@@ -265,6 +266,7 @@ impl RecordingObserver {
 
 impl Observer for RecordingObserver {
     fn observe(&self, event: Event) -> ObserverFuture<'_> {
+        tracing::trace!(target: "event", ?event, "recording observe");
         Box::pin(async move {
             self.events
                 .lock()

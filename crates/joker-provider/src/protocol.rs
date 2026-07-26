@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use joker::Model;
+use tracing::debug;
 
 /// Wire-level protocol / API format used by a provider endpoint.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +138,7 @@ impl Route {
     /// Dispatches to the appropriate provider implementation based on
     /// [`Route::protocol`].
     pub fn do_build_model(&self, model: &str) -> Result<Arc<dyn Model>, String> {
+        debug!(target: "protocol", model = %model, protocol = ?self.protocol, id = %self.id, "building model");
         let api_key = match &self.auth.credentials {
             CredentialSource::Value(v) => Some(v.clone()),
             CredentialSource::EnvVar(name) => std::env::var(name).ok(),

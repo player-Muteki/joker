@@ -95,6 +95,8 @@ pub async fn run_tui(options: TuiOptions) -> Result<(), TuiError> {
             return Err(TuiError::ChannelClosed);
         };
 
+        event.log_trace();
+
         match event {
             UiEvent::Terminal(CrosstermEvent::Key(key)) if key.kind == KeyEventKind::Press => {
                 if let Some(action) = app.handle_key(key) {

@@ -13,6 +13,7 @@ use std::{
 
 use futures_core::Stream;
 use futures_util::StreamExt;
+use tracing::{error, info, trace, warn};
 use joker::{
     Content, Message, Model, ModelError, ModelFuture, ModelRequest, ModelResponseEvent,
     ModelStream, Role, StopReason, ToolCall, ToolDefinition, ToolResult, Usage,
@@ -185,25 +186,33 @@ impl Model for OpenAiCompatibleModel {
         let provider_name = self.config.provider_name.clone();
 
         Box::pin(async move {
+            info!(target: "provider", provider = %provider_name, model = %config_model, "streaming request");
             let body = chat_request_body(&config_model, &request, extra.as_ref());
-            let response = client
-                .post(&url)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|error| ModelError::Stream(error.to_string()))?;
-
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                return Err(ModelError::Stream(format!(
-                    "{provider_name} request failed with {status}: {body}"
-                )));
+            let mut last_error = None;
+            for attempt in 1..=2 {
+                match client.post(&url).json(&body).send().await {
+                    Ok(response) => {
+                        if !response.status().is_success() {
+                            let status = response.status();
+                            let body = response.text().await.unwrap_or_default();
+                            return Err(ModelError::Stream(format!(
+                                "{provider_name} request failed with {status}: {body}"
+                            )));
+                        }
+                        let (tx, rx) = mpsc::unbounded_channel();
+                        let provider = provider_name.clone();
+                        tokio::spawn(async move {
+                            parse_response_stream(response, tx, &provider).await;
+                        });
+                        return Ok(Box::new(ReceiverModelStream { rx }) as ModelStream);
+                    }
+                    Err(error) => {
+                        warn!(target: "provider", provider = %provider_name, attempt, max_attempts = 2, error = %error, "request failed, retrying");
+                        last_error = Some(error);
+                    }
+                }
             }
-
-            let (tx, rx) = mpsc::unbounded_channel();
-            tokio::spawn(parse_response_stream(response, tx));
-            Ok(Box::new(ReceiverModelStream { rx }) as ModelStream)
+            Err(ModelError::Stream(last_error.unwrap().to_string()))
         })
     }
 }
@@ -223,6 +232,7 @@ impl Stream for ReceiverModelStream {
 async fn parse_response_stream(
     response: reqwest::Response,
     tx: mpsc::UnboundedSender<Result<ModelResponseEvent, ModelError>>,
+    provider: &str,
 ) {
     let mut parser = SseParser::default();
     let mut stream = response.bytes_stream();
@@ -231,6 +241,7 @@ async fn parse_response_stream(
         let chunk = match chunk {
             Ok(chunk) => chunk,
             Err(error) => {
+                error!(target: "provider", provider, error = %error, "stream chunk error");
                 let _ = tx.send(Err(ModelError::Stream(error.to_string())));
                 return;
             }
@@ -240,11 +251,13 @@ async fn parse_response_stream(
             match item {
                 ParsedSse::Done => return,
                 ParsedSse::Event(event) => {
+                    trace!(target: "provider", provider, event = ?event, "stream event");
                     if tx.send(Ok(event)).is_err() {
                         return;
                     }
                 }
                 ParsedSse::Error(error) => {
+                    error!(target: "provider", provider, error = %error, "stream parse error");
                     let _ = tx.send(Err(ModelError::Stream(error)));
                     return;
                 }
@@ -256,11 +269,13 @@ async fn parse_response_stream(
         match item {
             ParsedSse::Done => return,
             ParsedSse::Event(event) => {
+                trace!(target: "provider", provider, event = ?event, "stream event");
                 if tx.send(Ok(event)).is_err() {
                     return;
                 }
             }
             ParsedSse::Error(error) => {
+                error!(target: "provider", provider, error = %error, "stream parse error");
                 let _ = tx.send(Err(ModelError::Stream(error)));
                 return;
             }

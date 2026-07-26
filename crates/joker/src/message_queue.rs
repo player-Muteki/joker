@@ -24,13 +24,19 @@ impl PendingMessageQueue {
 
     /// Push a message onto the queue.
     pub fn enqueue(&self, message: impl Into<String>) {
-        self.messages.lock().unwrap().push(message.into());
+        let msg: String = message.into();
+        tracing::trace!(target: "session", msg_len = msg.len(), "message enqueued");
+        self.messages.lock().unwrap().push(msg);
     }
 
     /// Drain messages according to the given [`DrainMode`].
     #[must_use]
     pub fn drain(&self, mode: DrainMode) -> Vec<String> {
         let mut guard = self.messages.lock().unwrap();
+        let count = guard.len();
+        if count > 0 {
+            tracing::trace!(target: "session", count, ?mode, "messages drained");
+        }
         match mode {
             DrainMode::All => std::mem::take(&mut *guard),
             DrainMode::OneAtATime => {

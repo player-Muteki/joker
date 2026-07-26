@@ -10,7 +10,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::{StreamExt, future::join_all};
 use tokio_util::sync::CancellationToken;
@@ -95,6 +95,9 @@ impl Agent {
         }
         let _guard = RunGuard(&self.run_state);
 
+        let _start = Instant::now();
+        tracing::info!(target: "agent", "agent run started");
+
         let cancellation_token = request.cancellation_token.clone().unwrap_or_default();
         observe(&self.observer, Event::RunStarted).await;
 
@@ -138,11 +141,13 @@ impl Agent {
             }
         }.await;
 
-        if let Ok(outcome) = &result {
-            stop_reason = outcome.stop_reason;
-        } else if matches!(result, Err(RunError::Cancelled)) {
-            stop_reason = StopReason::Cancelled;
+        match &result {
+            Ok(outcome) => stop_reason = outcome.stop_reason,
+            Err(RunError::Cancelled) => stop_reason = StopReason::Cancelled,
+            Err(e) => tracing::error!(target: "agent", ?e, "agent run error"),
         }
+        let duration_ms = _start.elapsed().as_millis() as u64;
+        tracing::info!(target: "agent", ?stop_reason, duration_ms, "agent run finished");
         observe(&self.observer, Event::RunFinished { stop_reason }).await;
         result
     }
@@ -159,6 +164,9 @@ impl Agent {
         model_id: &str,
         cancellation_token: &CancellationToken,
     ) -> Result<TurnOutcome, RunError> {
+        let _turn_start = Instant::now();
+        tracing::info!(target: "agent", %turn_id, "turn started");
+
         observe(&self.observer, Event::TurnStarted {
             session_id: String::new(),
             turn_id: turn_id.to_string(),
@@ -232,11 +240,15 @@ impl Agent {
         let pending_tool_calls = model_output.tool_calls;
         conversation.push(assistant_message);
 
-        if pending_tool_calls.is_empty() {
+        let duration_ms = _turn_start.elapsed().as_millis() as u64;
+        let tool_call_count = pending_tool_calls.len();
+        tracing::info!(target: "agent", %turn_id, duration_ms, tool_call_count, "turn finished");
+
+        if tool_call_count == 0 {
             return Ok(TurnOutcome { stop_reason: model_output.stop_reason, has_tool_calls: false, tool_calls_count: 0, pending_tool_calls: Vec::new() });
         }
 
-        Ok(TurnOutcome { stop_reason: model_output.stop_reason, has_tool_calls: true, tool_calls_count: pending_tool_calls.len(), pending_tool_calls })
+        Ok(TurnOutcome { stop_reason: model_output.stop_reason, has_tool_calls: true, tool_calls_count: tool_call_count, pending_tool_calls })
     }
 
     pub(crate) async fn execute_tool_calls(
@@ -246,6 +258,10 @@ impl Agent {
     ) -> Result<Vec<ToolResult>, RunError> {
         if cancellation_token.is_cancelled() {
             return Err(RunError::Cancelled);
+        }
+
+        for call in &calls {
+            tracing::info!(target: "tool", tool_name = %call.name, call_id = %call.id, "tool dispatch");
         }
 
         if self.should_run_parallel(&calls) {
@@ -276,6 +292,8 @@ impl Agent {
         cancellation_token: &CancellationToken,
     ) -> Result<ToolResult, RunError> {
         if cancellation_token.is_cancelled() { return Err(RunError::Cancelled); }
+
+        tracing::debug!(target: "tool", tool_name = %call.name, call_id = %call.id, "tool execution start");
 
         let invocation = ToolInvocation {
             call_id: call.id.clone(),
@@ -370,6 +388,13 @@ impl Agent {
             }
         };
         observe(&self.observer, Event::ToolFinished { result: result.clone() }).await;
+
+        if result.is_error {
+            tracing::error!(target: "tool", tool_name = %result.name, call_id = %result.call_id, error = %result.output, "tool error");
+        } else {
+            tracing::info!(target: "tool", tool_name = %result.name, call_id = %result.call_id, "tool success");
+        }
+        tracing::debug!(target: "tool", call_id = %result.call_id, "tool execution finish");
         Ok(result)
     }
 }
@@ -399,17 +424,17 @@ impl AgentBuilder {
     }
 
     /// Set the [`ToolRegistry`].
-    #[must_use] pub fn tools(mut self, tools: Arc<ToolRegistry>) -> Self { self.tools = Some(tools); self }
+    #[must_use] pub fn tools(mut self, tools: Arc<ToolRegistry>) -> Self { tracing::debug!(target: "agent", "builder: tools set"); self.tools = Some(tools); self }
     /// Set the [`ContextBuilder`].
-    #[must_use] pub fn context_builder(mut self, context_builder: Arc<dyn ContextBuilder>) -> Self { self.context_builder = Some(context_builder); self }
+    #[must_use] pub fn context_builder(mut self, context_builder: Arc<dyn ContextBuilder>) -> Self { tracing::debug!(target: "agent", "builder: context_builder set"); self.context_builder = Some(context_builder); self }
     /// Set the [`ToolPolicy`] for permission evaluation.
-    #[must_use] pub fn permissions(mut self, policy: Arc<dyn ToolPolicy>) -> Self { self.policy = Some(policy); self }
+    #[must_use] pub fn permissions(mut self, policy: Arc<dyn ToolPolicy>) -> Self { tracing::debug!(target: "agent", "builder: permissions set"); self.policy = Some(policy); self }
     /// Set the [`Observer`] for lifecycle events.
-    #[must_use] pub fn observer(mut self, observer: Arc<dyn Observer>) -> Self { self.observer = Some(observer); self }
+    #[must_use] pub fn observer(mut self, observer: Arc<dyn Observer>) -> Self { tracing::debug!(target: "agent", "builder: observer set"); self.observer = Some(observer); self }
     /// Attach a [`SharedApprovalChannel`] for interactive approval.
-    #[must_use] pub fn approval_channel(mut self, channel: SharedApprovalChannel) -> Self { self.approval_channel = Some(channel); self }
+    #[must_use] pub fn approval_channel(mut self, channel: SharedApprovalChannel) -> Self { tracing::debug!(target: "agent", "builder: approval_channel set"); self.approval_channel = Some(channel); self }
     /// Set the [`AgentConfig`].
-    #[must_use] pub fn config(mut self, config: AgentConfig) -> Self { self.config = Some(config); self }
+    #[must_use] pub fn config(mut self, config: AgentConfig) -> Self { tracing::debug!(target: "agent", "builder: config set"); self.config = Some(config); self }
     /// Set the system prompt.  Injected during context building.
     #[must_use] pub fn system_prompt(mut self, prompt: impl Into<String>) -> Self { self._system_prompt = Some(prompt.into()); self }
 
@@ -454,14 +479,17 @@ async fn collect_model_output(
         if cancellation_token.is_cancelled() { return Err(RunError::Cancelled); }
         match event? {
             ModelResponseEvent::TextDelta(delta) => {
+                tracing::debug!(target: "agent", delta_len = delta.len(), "text delta");
                 observe(observer, Event::TextDelta { delta: delta.clone() }).await;
                 text.push_str(&delta);
             }
             ModelResponseEvent::ReasoningDelta(delta) => {
+                tracing::debug!(target: "agent", delta_len = delta.len(), "reasoning delta");
                 observe(observer, Event::ReasoningDelta { delta: delta.clone() }).await;
                 reasoning.push_str(&delta);
             }
             ModelResponseEvent::ToolCall(tool_call) => {
+                tracing::debug!(target: "agent", tool_name = %tool_call.name, "tool call delta");
                 if !text.is_empty() { content.push(Content::Text(TextContent { text: std::mem::take(&mut text) })); }
                 if !reasoning.is_empty() { content.push(Content::Reasoning(crate::ReasoningContent { text: std::mem::take(&mut reasoning) })); }
                 content.push(Content::ToolCall(tool_call.clone()));
@@ -489,6 +517,7 @@ async fn collect_model_output(
 }
 
 async fn observe(observer: &Arc<dyn Observer>, event: Event) {
+    tracing::trace!(target: "event", ?event);
     let _ = observer.observe(event).await;
 }
 

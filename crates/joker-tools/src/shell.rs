@@ -2,6 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::os::unix::process::CommandExt;
 use tokio::io::AsyncReadExt;
+use tracing::*;
 
 use joker::{
     ApprovalRequirement, Tool, ToolAnnotations, ToolCapability, ToolDefinition, ToolError,
@@ -144,6 +145,7 @@ impl Tool for ShellTool {
                     .current_dir(&root)
                     .spawn()
                     .map_err(|e| ToolError::Execution(format!("bg spawn failed: {e}")))?;
+                debug!(target: "tool.shell", command_preview = %command_str, pid = child.id(), "background job spawned");
                 let mut res = json!({
                     "bg": true,
                     "pid": child.id(),
@@ -155,6 +157,7 @@ impl Tool for ShellTool {
                 return Ok(ToolOutput::new(res));
             }
 
+            info!(target: "tool.shell", command_preview = %command_str, "executing command");
             let mut cmd = tokio::process::Command::new("sh");
             cmd.as_std_mut().process_group(0);
             cmd.arg("-c")
@@ -198,7 +201,10 @@ impl Tool for ShellTool {
                     let err = stderr_task.await.unwrap_or_default();
                     (Some(status), out, err)
                 }
-                Ok(Err(e)) => return Err(ToolError::Execution(format!("command failed: {e}"))),
+                Ok(Err(e)) => {
+                    error!(target: "tool.shell", error = %e, command_preview = %command_str, "command execution failed");
+                    return Err(ToolError::Execution(format!("command failed: {e}")));
+                }
                 Err(_) => {
                     kill_process_group(child.id().unwrap_or(0));
                     let _ = child.wait().await;
@@ -225,6 +231,9 @@ impl Tool for ShellTool {
 
             let exit_code = status.as_ref().and_then(|s| s.code());
             let success = status.is_some_and(|s| s.success());
+
+            let output_len = raw_stdout.len() + raw_stderr.len();
+            debug!(target: "tool.shell", exit_code, output_len, success, "command completed");
 
             let (stdout_txt, stderr_txt, spill_path) =
                 build_ring_buffer(&raw_stdout, &raw_stderr, 64_000, 8_000);

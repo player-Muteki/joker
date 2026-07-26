@@ -7,6 +7,7 @@
 //! into an mpsc channel as [`crate::event::UiEvent::Agent`].
 
 use std::{path::PathBuf, sync::Arc};
+use tracing::*;
 
 use joker::{
     Agent, AgentPermission, ModelResponseEvent, Observer, ObserverFuture, PermissionEngine,
@@ -42,6 +43,7 @@ impl Observer for ChannelObserver {
     fn observe(&self, event: joker::Event) -> ObserverFuture<'_> {
         let tx = self.tx.clone();
         Box::pin(async move {
+            trace!(target: "tui.driver", ?event, "agent event");
             let _ = tx.send(UiEvent::Agent(event));
             Ok(())
         })
@@ -178,6 +180,7 @@ impl AgentDriver {
         tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
         approval_channel: SharedApprovalChannel,
     ) -> Result<JoinHandle<()>, TuiError> {
+        debug!(target: "tui.driver", "spawning agent run");
         let agent = self.build_agent(tx.clone(), approval_channel.clone())?;
         Ok(tokio::spawn(async move {
             let request = RunRequest::new(prompt)
@@ -199,6 +202,7 @@ impl AgentDriver {
         tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
         approval_channel: SharedApprovalChannel,
     ) -> Result<JoinHandle<()>, TuiError> {
+        debug!(target: "tui.driver", message_count = conversation.messages().len(), "spawning agent run with conversation");
         let agent = self.build_agent(tx.clone(), approval_channel.clone())?;
         Ok(tokio::spawn(async move {
             let request = RunRequest::with_conversation(conversation)
