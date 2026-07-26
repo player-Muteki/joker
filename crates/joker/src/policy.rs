@@ -27,9 +27,17 @@ pub enum ToolDecision {
     /// The tool invocation is permitted.
     Allow,
     /// The tool invocation is denied with an explanation.
-    Deny { reason: String },
+    Deny {
+        /// Human-readable reason for the denial.
+        reason: String,
+    },
     /// The tool invocation requires user approval before proceeding.
-    Ask { request_id: String, reason: String },
+    Ask {
+        /// Unique identifier for the approval request.
+        request_id: String,
+        /// Human-readable reason why approval is needed.
+        reason: String,
+    },
 }
 
 /// A request submitted for user approval via an approval channel.
@@ -49,9 +57,15 @@ pub struct ApprovalRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApprovalResponse {
     /// The request was approved, optionally remembered for the session.
-    Approved { remember_for_session: bool },
+    Approved {
+        /// Whether to remember this decision for the remainder of the session.
+        remember_for_session: bool,
+    },
     /// The request was denied with an explanation.
-    Denied { reason: String },
+    Denied {
+        /// Human-readable reason for the denial.
+        reason: String,
+    },
 }
 
 // ── Simple in-memory approval channel ───────────────────────────────────

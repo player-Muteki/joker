@@ -1,3 +1,9 @@
+//! Terminal setup, event polling, and the top-level [`run_tui`] event loop.
+//!
+//! Manages raw-mode / alternate-screen entry and exit, spawns background
+//! threads for terminal events and a tick interval, and dispatches every
+//! [`UiEvent`] to [`App`] and [`AgentDriver`].
+
 use std::{
     io::{self, Stdout},
     time::Duration,
@@ -23,14 +29,23 @@ use crate::{
     widgets,
 };
 
+/// Configuration passed to [`run_tui`] to initialise the terminal session.
 #[derive(Clone, Debug)]
 pub struct TuiOptions {
+    /// Optional initial prompt to submit immediately on launch.
     pub initial_prompt: Option<String>,
+    /// Whether to use the alternate screen buffer.
     pub use_alt_screen: bool,
+    /// Config store for persisting provider/model changes.
     pub config_store: joker_config::ConfigStore,
+    /// Runtime configuration for provider, model, and credentials.
     pub runtime_config: joker_config::RuntimeConfig,
 }
 
+/// Run the main TUI event loop.
+///
+/// Sets up the terminal, spawns input and tick threads, runs the
+/// event-dispatch loop, and returns when the user quits.
 pub async fn run_tui(options: TuiOptions) -> Result<(), TuiError> {
     let (mut terminal, _guard) = setup_terminal(options.use_alt_screen)?;
 

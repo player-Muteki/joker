@@ -1,11 +1,20 @@
+//! Runtime configuration — the resolved, validated form used after loading.
+//!
+//! [`RuntimeConfig`] merges the on-disk [`FileConfig`] with CLI overrides
+//! and provides convenience methods for querying the active provider and model.
+
 use crate::error::ConfigError;
 use crate::provider_selection::ProviderSelection;
 use crate::types::FileConfig;
 
+/// The resolved configuration used throughout the application at runtime.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeConfig {
+    /// The active provider selection (scripted or a routed LLM provider).
     pub provider: ProviderSelection,
+    /// Response template when using the scripted provider.
     pub scripted_response: String,
+    /// Whether demo/debug tools are enabled.
     pub demo_tool: bool,
 }
 
@@ -20,6 +29,7 @@ impl Default for RuntimeConfig {
 }
 
 impl RuntimeConfig {
+    /// Returns the name of the currently active model.
     #[must_use]
     pub fn current_model(&self) -> String {
         match &self.provider {
@@ -34,6 +44,7 @@ impl RuntimeConfig {
         }
     }
 
+    /// Returns a human-readable label for the active provider (e.g. `"deepseek"`, `"anthropic/claude-sonnet-4-20250514"`).
     #[must_use]
     pub fn provider_label(&self) -> String {
         match &self.provider {
@@ -49,11 +60,14 @@ impl RuntimeConfig {
         }
     }
 
+    /// Switch the active provider to a named preset.
     pub fn switch_provider(&mut self, provider: &str) -> Result<(), ConfigError> {
         self.provider = ProviderSelection::preset(provider)?;
         Ok(())
     }
 
+    /// Returns the name of the API key environment variable if it is missing.
+    #[must_use]
     pub fn needs_api_key(&self) -> Option<String> {
         match &self.provider {
             ProviderSelection::Scripted { .. } => None,
@@ -72,6 +86,7 @@ impl RuntimeConfig {
         }
     }
 
+    /// Switch the active model for the current provider.
     pub fn switch_model(&mut self, model: impl Into<String>) -> Result<(), ConfigError> {
         let model = model.into();
         if model.trim().is_empty() {
@@ -86,6 +101,7 @@ impl RuntimeConfig {
         }
     }
 
+    /// Returns a list of model names available for the active provider.
     #[must_use]
     pub fn available_models(&self) -> Vec<String> {
         match &self.provider {
@@ -100,6 +116,7 @@ impl RuntimeConfig {
         }
     }
 
+    /// Convert this runtime config back into a serializable [`FileConfig`].
     #[must_use]
     pub fn to_file_config(&self) -> FileConfig {
         FileConfig {

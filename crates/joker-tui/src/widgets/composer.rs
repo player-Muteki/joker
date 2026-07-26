@@ -8,6 +8,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::App;
 
+/// Render the prompt composer box and return the cursor [`Position`].
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) -> Position {
     let block = Block::default()
         .borders(Borders::ALL)

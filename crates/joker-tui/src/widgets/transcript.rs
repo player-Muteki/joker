@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::app::{App, ToolState, TranscriptItem};
 
+/// Render the conversation transcript into the given area.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let lines = transcript_lines(app);
     let paragraph = Paragraph::new(lines)

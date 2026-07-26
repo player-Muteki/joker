@@ -19,6 +19,7 @@ pub struct Skill {
 }
 
 impl Skill {
+    /// Create a new `Skill` with the given name and default empty fields.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -70,11 +71,13 @@ pub struct SkillRegistry {
 }
 
 impl SkillRegistry {
+    /// Create a new empty `SkillRegistry`.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Add a skill to this registry.
     pub fn register(&mut self, skill: Skill) {
         self.skills.push(skill);
     }

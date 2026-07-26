@@ -39,9 +39,9 @@ pub enum PermissionSetting {
 /// Allows precise control like: `edit: {"*": "deny", "plans/*.md": "allow"}`.
 #[derive(Clone, Debug)]
 pub struct HardPermissionRule {
-    /// Tool name pattern (e.g. "edit", "write_file", or "*" for all).
+    /// Tool name pattern (e.g. `"edit"`, `"write_file"`, or `"*"` for all).
     pub tool_pattern: String,
-    /// Resource path pattern (e.g. "*.md", "src/*", or "*").
+    /// Resource path pattern (e.g. `"*.md"`, `"src/*"`, or `"*"`).
     pub resource_pattern: String,
     /// The non-overridable setting.
     pub setting: PermissionSetting,
@@ -50,17 +50,19 @@ pub struct HardPermissionRule {
 /// Permission configuration for a named agent.
 #[derive(Clone, Debug)]
 pub struct AgentPermission {
+    /// Name of the agent this config applies to.
     pub agent_name: String,
+    /// Per-tool permission settings.
     pub tool_permissions: HashMap<ToolName, PermissionSetting>,
+    /// Path to the agent's constraint file (markdown).
     pub constraint_file: PathBuf,
-    /// Non-overridable permission — checked first and always terminal.
-    /// Only meaningful when set to `Disabled` (to enforce read-only mode
-    /// like plan agent) or `AutoAccept`.
+    /// Non-overridable blanket permission for all mutating tools.
     ///
-    /// When set to a simple `PermissionSetting`, it applies to all mutating
-    /// tools. For finer-grained control, use `hard_permission_rules`.
+    /// Checked first and always terminal.  Use `Disabled` for read-only
+    /// agents (e.g. plan) or `AutoAccept` for fully trusted agents.
+    /// For path-precise rules see `hard_permission_rules`.
     pub hard_permission: Option<PermissionSetting>,
-    /// Path-level precise hard permission rules (MiMo-Code style).
+    /// Path-precise hard permission rules (MiMo-Code style).
     ///
     /// Each rule specifies a tool pattern and resource path pattern.
     /// Rules are evaluated in order — the first matching rule wins.
@@ -79,13 +81,20 @@ pub struct AgentPermission {
 /// Outcome of evaluating a tool permission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PermissionDecision {
+    /// Tool execution is permitted.
     Allow,
+    /// Tool execution requires interactive approval.
     Ask {
+        /// Name of the tool being requested.
         tool_name: String,
+        /// Human-readable explanation for the prompt.
         reason: String,
+        /// Unique identifier for this approval request.
         request_id: String,
     },
+    /// Tool execution is denied.
     Deny {
+        /// Reason for denial.
         reason: String,
     },
 }
@@ -100,7 +109,7 @@ struct SessionGrant {
 }
 
 /// The permission engine: owns agent profiles, session grants, and produces
-/// per-agent `ToolPolicy` implementations and filtered `ToolRegistry` instances.
+/// per-agent [`ToolPolicy`] implementations and filtered [`ToolRegistry`] instances.
 #[derive(Clone, Debug)]
 pub struct PermissionEngine {
     agent_permissions: HashMap<String, AgentPermission>,
@@ -108,6 +117,7 @@ pub struct PermissionEngine {
 }
 
 impl PermissionEngine {
+    /// Create an empty permission engine.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -122,7 +132,7 @@ impl PermissionEngine {
             .insert(permission.agent_name.clone(), permission);
     }
 
-    /// Grant a tool for the current session (Allow for Session).
+    /// Temporarily grant a tool for the remainder of the session.
     pub fn grant_session(&mut self, agent_name: &str, tool_name: ToolName) {
         self.session_grants.push(SessionGrant {
             agent_name: agent_name.to_string(),
@@ -254,7 +264,10 @@ impl PermissionEngine {
         }
     }
 
-    /// Filter a tool registry to only include tools the agent is allowed to use.
+    /// Filter a [`ToolRegistry`] to only include tools the agent is allowed to see.
+    ///
+    /// Disabled tools and tools blocked by blanket hard-permission rules are
+    /// excluded so the model never sees their definitions.
     #[must_use]
     pub fn materialize_tools(
         &self,
@@ -314,8 +327,7 @@ impl PermissionEngine {
         filtered
     }
 
-    /// Build a `ToolPolicy` implementation for the given agent that delegates
-    /// to this engine.
+    /// Build a [`ToolPolicy`] that delegates all decisions to this engine for the given agent.
     #[must_use]
     pub fn policy_for(&self, agent_name: String) -> Arc<dyn ToolPolicy> {
         Arc::new(EnginePolicy {
@@ -328,7 +340,7 @@ impl PermissionEngine {
         })
     }
 
-    /// Build a `ToolPolicy` with an approval channel wired in.
+    /// Build a [`ToolPolicy`] with an approval channel for interactive Ask flows.
     #[must_use]
     pub fn policy_for_with_channel(
         &self,
@@ -345,7 +357,7 @@ impl PermissionEngine {
         })
     }
 
-    /// Return the constraint file path for an agent, if configured.
+    /// The constraint-file path for an agent, if one was registered.
     #[must_use]
     pub fn constraint_file(&self, agent_name: &str) -> Option<PathBuf> {
         self.agent_permissions

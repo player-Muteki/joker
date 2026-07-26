@@ -1,8 +1,14 @@
+//! CLI argument parsing and binary entry point.
+//!
+//! Uses [`clap::Parser`] to define command-line flags and calls
+//! [`crate::terminal::run_tui`] with the resulting [`TuiOptions`].
+
 use clap::Parser;
 use joker_config::{ConfigOverrides, ConfigStore};
 
 use crate::{TuiOptions, run_tui};
 
+/// CLI argument structure for the joker-tui binary.
 #[derive(Debug, Parser)]
 #[command(name = "joker", about = "Terminal UI for Joker agent kernel")]
 pub struct Cli {
@@ -26,6 +32,7 @@ pub struct Cli {
     demo_tool: bool,
 }
 
+/// Parse CLI args and run the TUI event loop.
 pub async fn run() -> Result<(), crate::TuiError> {
     let cli = Cli::parse();
     let config_store = ConfigStore::new(cli.config);

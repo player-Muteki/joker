@@ -1,5 +1,11 @@
 #![allow(unreachable_pub)]
 
+//! Agent — the core turn-loop driver.
+//!
+//! Owns a [`Model`], a [`ToolRegistry`], a [`ToolPolicy`], a [`ContextBuilder`],
+//! and an [`Observer`].  `Agent::run` drives the inner tool-call loop;
+//! `AgentRuntime` wraps it with an `Op` queue for steer/follow-up support.
+
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -19,6 +25,11 @@ use crate::{
     agent_types::TurnOutcome,
 };
 
+/// The core agent that drives the model tool-call loop.
+///
+/// Holds a [`Model`] for inference, a [`ToolRegistry`] for available tools,
+/// a [`ToolPolicy`] for permission checks, a [`ContextBuilder`] for assembling
+/// prompt context, and an [`Observer`] for emitting lifecycle events.
 pub struct Agent {
     pub(crate) model: Arc<dyn Model>,
     pub(crate) tools: Arc<ToolRegistry>,
@@ -39,6 +50,7 @@ impl Drop for RunGuard<'_> {
 }
 
 impl Agent {
+    /// Create an `Agent` with a [`Model`] and all other components at their defaults.
     #[must_use]
     pub fn new(model: Arc<dyn Model>) -> Self {
         Self {
@@ -53,19 +65,30 @@ impl Agent {
         }
     }
 
+    /// Replace the [`ToolRegistry`].
     #[must_use]
     pub fn with_tools(mut self, tools: Arc<ToolRegistry>) -> Self { self.tools = tools; self }
+    /// Replace the [`ContextBuilder`].
     #[must_use]
     pub fn with_context_builder(mut self, context_builder: Arc<dyn ContextBuilder>) -> Self { self.context_builder = context_builder; self }
+    /// Replace the [`ToolPolicy`] for permission evaluation.
     #[must_use]
     pub fn with_policy(mut self, policy: Arc<dyn ToolPolicy>) -> Self { self.policy = policy; self }
+    /// Replace the [`Observer`] for lifecycle events.
     #[must_use]
     pub fn with_observer(mut self, observer: Arc<dyn Observer>) -> Self { self.observer = observer; self }
+    /// Attach a [`SharedApprovalChannel`] for interactive tool approval.
     #[must_use]
     pub fn with_approval_channel(mut self, channel: SharedApprovalChannel) -> Self { self.approval_channel = Some(channel); self }
+    /// Replace the [`AgentConfig`].
     #[must_use]
     pub fn with_config(mut self, config: AgentConfig) -> Self { self.config = config; self }
 
+    /// Drive a full agent run: tool-call loop with retry, limits, and cancellation.
+    ///
+    /// Acquires the run guard (returns [`RunError::Busy`] if already running),
+    /// then repeatedly calls [`run_turn`](Self::run_turn) until the model
+    /// produces no tool calls or a limit is reached.
     pub async fn run(&self, mut request: crate::RunRequest) -> Result<crate::RunOutcome, RunError> {
         if self.run_state.swap(true, Ordering::Acquire) {
             return Err(RunError::Busy);
@@ -124,6 +147,11 @@ impl Agent {
         result
     }
 
+    /// Execute a single turn: build context, stream from the model, collect output.
+    ///
+    /// Calls [`ContextBuilder::build`], then [`Model::stream`] with retry logic,
+    /// pushes the assistant message into `conversation`, and returns any tool
+    /// calls that need to be executed.
     pub async fn run_turn(
         &self,
         conversation: &mut crate::Conversation,
@@ -348,6 +376,10 @@ impl Agent {
 
 // ── AgentBuilder ─────────────────────────────────────────────────────────
 
+/// Builder for [`Agent`] with a fluent API.
+///
+/// Start with [`new`](Self::new), chain the `with_*` / field methods, then
+/// call [`build`](Self::build).
 pub struct AgentBuilder {
     model: Arc<dyn Model>,
     tools: Option<Arc<ToolRegistry>>,
@@ -360,19 +392,28 @@ pub struct AgentBuilder {
 }
 
 impl AgentBuilder {
+    /// Start building an [`Agent`] with a required [`Model`].
     #[must_use]
     pub fn new(model: Arc<dyn Model>) -> Self {
         Self { model, tools: None, context_builder: None, policy: None, observer: None, config: None, approval_channel: None, _system_prompt: None }
     }
 
+    /// Set the [`ToolRegistry`].
     #[must_use] pub fn tools(mut self, tools: Arc<ToolRegistry>) -> Self { self.tools = Some(tools); self }
+    /// Set the [`ContextBuilder`].
     #[must_use] pub fn context_builder(mut self, context_builder: Arc<dyn ContextBuilder>) -> Self { self.context_builder = Some(context_builder); self }
+    /// Set the [`ToolPolicy`] for permission evaluation.
     #[must_use] pub fn permissions(mut self, policy: Arc<dyn ToolPolicy>) -> Self { self.policy = Some(policy); self }
+    /// Set the [`Observer`] for lifecycle events.
     #[must_use] pub fn observer(mut self, observer: Arc<dyn Observer>) -> Self { self.observer = Some(observer); self }
+    /// Attach a [`SharedApprovalChannel`] for interactive approval.
     #[must_use] pub fn approval_channel(mut self, channel: SharedApprovalChannel) -> Self { self.approval_channel = Some(channel); self }
+    /// Set the [`AgentConfig`].
     #[must_use] pub fn config(mut self, config: AgentConfig) -> Self { self.config = Some(config); self }
+    /// Set the system prompt.  Injected during context building.
     #[must_use] pub fn system_prompt(mut self, prompt: impl Into<String>) -> Self { self._system_prompt = Some(prompt.into()); self }
 
+    /// Build the [`Agent`], using defaults for any unset component.
     #[must_use]
     pub fn build(self) -> Agent {
         Agent {

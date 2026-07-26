@@ -1,3 +1,8 @@
+//! Transport abstractions for MCP communication.
+//!
+//! Provides the [`McpTransport`] trait and a [`StdioTransport`] implementation
+//! that communicates with a child process over stdin/stdout.
+
 use std::process::Stdio;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -8,12 +13,16 @@ use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
 /// Errors that can occur during transport operations.
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
+    /// An underlying I/O error from the process or channel.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    /// The child process exited before the response was received.
     #[error("process exited unexpectedly")]
     ProcessExited,
+    /// The transport has not been connected yet.
     #[error("transport not connected")]
     NotConnected,
+    /// A JSON serialization or deserialization error.
     #[error("serde error: {0}")]
     Serde(#[from] serde_json::Error),
 }

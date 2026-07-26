@@ -1,3 +1,10 @@
+//! OpenAI-compatible chat completions provider.
+//!
+//! Implements the [`Model`](joker::Model) trait for any provider that speaks the
+//! OpenAI `/v1/chat/completions` wire format. Includes SSE stream parsing,
+//! tool-call streaming, and provider-specific configuration helpers
+//! ([`alibaba_config`], [`zhipuai_config`], [`moonshot_config`], [`baidu_config`]).
+
 use std::{
     collections::BTreeMap,
     pin::Pin,
@@ -16,19 +23,27 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+/// Configuration for an OpenAI-compatible provider.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenAiCompatibleConfig {
+    /// Human-readable provider name (used in error messages and defaults).
     pub provider_name: String,
+    /// Base URL of the provider API (without the `/chat/completions` suffix).
     pub base_url: String,
+    /// Model identifier sent in the request body.
     pub model: String,
+    /// Optional in-memory API key.
     pub api_key: Option<String>,
+    /// Optional environment variable name that holds the API key.
     pub api_key_env: Option<String>,
+    /// Whether a non-empty API key is required to construct the client.
     pub require_api_key: bool,
     /// Additional JSON body fields merged into the request (e.g. `enable_thinking`, `top_p`).
     pub extra_body: Option<serde_json::Value>,
 }
 
 impl OpenAiCompatibleConfig {
+    /// Build the full `/chat/completions` URL from [`base_url`](OpenAiCompatibleConfig::base_url).
     #[must_use]
     pub fn chat_url(&self) -> String {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
@@ -76,14 +91,23 @@ fn provider_defaults_zhipuai(model: &str) -> Option<Value> {
     }
 }
 
+/// Errors specific to the OpenAI-compatible provider.
 #[derive(Debug, Error)]
 pub enum OpenAiProviderError {
+    /// The provider requires an API key but none was provided.
     #[error("{provider} API key is missing; set {env}")]
-    MissingApiKey { provider: String, env: String },
+    MissingApiKey {
+        /// Provider name shown in the error message.
+        provider: String,
+        /// Environment variable name shown in the error message.
+        env: String,
+    },
+    /// The API key could not be parsed as a valid HTTP header value.
     #[error("invalid authorization header")]
     InvalidAuthorizationHeader,
 }
 
+/// A model backed by an OpenAI-compatible chat completions endpoint.
 #[derive(Clone, Debug)]
 pub struct OpenAiCompatibleModel {
     config: OpenAiCompatibleConfig,
@@ -91,6 +115,10 @@ pub struct OpenAiCompatibleModel {
 }
 
 impl OpenAiCompatibleModel {
+    /// Create a new [`OpenAiCompatibleModel`].
+    ///
+    /// Validates the API key (if required) and builds the HTTP client with
+    /// default headers. Returns an error if the key is missing or malformed.
     pub fn new(config: OpenAiCompatibleConfig) -> Result<Self, OpenAiProviderError> {
         if config.require_api_key && config.api_key.as_deref().unwrap_or_default().is_empty() {
             return Err(OpenAiProviderError::MissingApiKey {
@@ -368,6 +396,7 @@ fn map_finish_reason(reason: &str) -> StopReason {
     }
 }
 
+/// Build the JSON request body for a chat completions call.
 pub fn chat_request_body(model: &str, request: &ModelRequest, extra_body: Option<&Value>) -> Value {
     let mut body = json!({
         "model": model,

@@ -16,10 +16,12 @@ use crate::client::{McpClient, McpError};
 
 /// Configuration for an MCP server connection used by tool adapters.
 ///
-/// Multiple tools from the same server share a single `McpClient` via `Arc<Mutex<>>`.
+/// Multiple tools from the same server share a single [`McpClient`] via `Arc<Mutex<>>`.
 #[derive(Clone)]
 pub struct McpToolConfig {
+    /// Path or name of the MCP server executable.
     pub command: String,
+    /// Command-line arguments passed to the server process.
     pub args: Vec<String>,
 }
 

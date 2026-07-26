@@ -1,3 +1,15 @@
+//! Joker — API-first Rust coding agent.
+//!
+//! Joker is a TUI-interactive coding agent with a library-first architecture.
+//! The core library provides:
+//! - **Agent loop**: [`Agent`], [`AgentRuntime`], [`Op`]-driven event loop
+//! - **Tool system**: [`Tool`] trait, [`ToolRegistry`], permission gating
+//! - **Provider abstraction**: [`Model`] trait with OpenAI/Anthropic/Gemini backends
+//! - **Session management**: [`SessionStore`] for persistence
+//! - **Context building**: multi-strategy context compression and assembly
+//! - **Event system**: [`Event`], [`Observer`] for streaming turn events
+//! - **Policy engine**: [`PermissionEngine`], [`ToolPolicy`], [`AllowAllPolicy`]
+
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 #![warn(missing_docs)]
@@ -10,7 +22,9 @@ mod agent_types;
 mod context;
 mod credential;
 mod error;
+/// Turn-level events emitted during agent execution.
 pub mod event;
+/// Lifecycle hooks for session/turn/tool events.
 pub mod hook;
 mod message_queue;
 mod model;
@@ -18,6 +32,7 @@ mod permission_engine;
 mod policy;
 mod protocol;
 mod session;
+/// Skills inject prompt fragments based on file-path patterns.
 pub mod skill;
 mod tool;
 mod tool_set;

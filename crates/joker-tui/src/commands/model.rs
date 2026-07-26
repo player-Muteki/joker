@@ -4,6 +4,7 @@ use crate::app::{App, Dialog, DialogKind};
 
 use super::{CommandAction, CommandInfo, CommandResult, SlashCommand};
 
+/// Slash command `/model` for selecting or switching the active model.
 pub(super) struct ModelCommand;
 
 impl SlashCommand for ModelCommand {

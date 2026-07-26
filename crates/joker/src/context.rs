@@ -1,3 +1,16 @@
+//! Context building and compaction system.
+//!
+//! Builders implement [`ContextBuilder`] to produce a [`BuiltContext`] from a
+//! [`Conversation`].  Composition wrappers add fixed-window truncation
+//! ([`FixedWindowContextBuilder`]), LLM-style summary ([`SummaryContextBuilder`]),
+//! system-prefix injection ([`PrefixedContextBuilder`]), and multi-level
+//! compaction ([`CompactingContextBuilder`]).
+//!
+//! Compaction strategies (soft / compact / force / micro) are driven by
+//! token-count thresholds ([`ContextThresholds`]) and a [`CompactionLevel`]
+//! classifier.  The [`micro_dedup_messages`] helper replaces repeated large
+//! tool results with stubs without calling an LLM.
+
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -6,27 +19,42 @@ use crate::{
     Content, Conversation, Event, Message, NoopObserver, Observer, error::BoxFutureResult,
 };
 
+/// Future returned by [`ContextBuilder::build`].
 pub type ContextFuture<'a> = BoxFutureResult<'a, BuiltContext, ContextError>;
 
+/// Produces a [`BuiltContext`] from a [`Conversation`] slice and [`ContextLimits`].
+///
+/// Implementations may truncate, summarize, or reorder messages.  The trait is
+/// object-safe and all public builders implement it.
 pub trait ContextBuilder: Send + Sync {
+    /// Build a context, returning a [`BuiltContext`] or a [`ContextError`].
     fn build<'a>(&'a self, input: ContextInput<'a>) -> ContextFuture<'a>;
 }
 
+/// Input passed to [`ContextBuilder::build`].
 #[derive(Clone, Copy, Debug)]
 pub struct ContextInput<'a> {
+    /// Conversation to build context from.
     pub conversation: &'a Conversation,
+    /// Hard limits the builder must not exceed.
     pub limits: ContextLimits,
 }
 
+/// Result produced by a [`ContextBuilder`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuiltContext {
+    /// Messages ready for the LLM request.
     pub messages: Vec<Message>,
 }
 
+/// Hard limits enforced by every [`ContextBuilder`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContextLimits {
+    /// Maximum number of messages allowed.
     pub max_messages: usize,
+    /// Maximum total text bytes across all messages.
     pub max_text_bytes: usize,
+    /// Maximum total tool-result bytes across all messages.
     pub max_tool_result_bytes: usize,
 }
 
@@ -40,12 +68,16 @@ impl Default for ContextLimits {
     }
 }
 
+/// Errors returned by context building and limit enforcement.
 #[derive(Debug, Error)]
 pub enum ContextError {
+    /// A hard limit (messages, text bytes, or tool-result bytes) was exceeded.
     #[error("context limit exceeded: {0}")]
     LimitExceeded(&'static str),
 }
 
+/// Builder that passes through the full [`Conversation`] unchanged (subject to
+/// [`ContextLimits`]).
 #[derive(Default)]
 pub struct PassthroughContextBuilder;
 
@@ -59,12 +91,14 @@ impl ContextBuilder for PassthroughContextBuilder {
     }
 }
 
+/// Builder that keeps only the *N* most recent messages.
 #[derive(Clone, Debug)]
 pub struct FixedWindowContextBuilder {
     max_messages: usize,
 }
 
 impl FixedWindowContextBuilder {
+    /// Create a builder that keeps up to `max_messages` recent messages.
     #[must_use]
     pub fn new(max_messages: usize) -> Self {
         Self { max_messages }
@@ -94,6 +128,8 @@ pub struct SummaryContextBuilder {
 }
 
 impl SummaryContextBuilder {
+    /// Wrap `inner` so that older messages are summarized when the conversation
+    /// grows past `max_recent_messages`.
     #[must_use]
     pub fn new(max_recent_messages: usize, inner: Box<dyn ContextBuilder>) -> Self {
         Self {
@@ -257,7 +293,9 @@ pub fn estimate_tokens(messages: &[Message]) -> usize {
     total_chars / 4
 }
 
-/// Configuration for context compaction thresholds.
+/// Token-count thresholds that drive context compaction.
+///
+/// See [`CompactionLevel::from_tokens`] for how thresholds map to levels.
 #[derive(Clone, Copy, Debug)]
 pub struct ContextThresholds {
     /// Token count at which to notify the user (soft limit).
@@ -281,7 +319,8 @@ impl Default for ContextThresholds {
     }
 }
 
-/// Outcome of evaluating context size against thresholds.
+/// Compaction level determined by evaluating token count against
+/// [`ContextThresholds`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompactionLevel {
     /// Under all thresholds — no action needed.
@@ -297,7 +336,8 @@ pub enum CompactionLevel {
 }
 
 impl CompactionLevel {
-    /// Determine the compaction level for a token estimate.
+    /// Classify a token count into a [`CompactionLevel`] using the given
+    /// [`ContextThresholds`].
     #[must_use]
     pub fn from_tokens(tokens: usize, thresholds: &ContextThresholds) -> Self {
         if tokens >= thresholds.force_tokens {
@@ -376,6 +416,8 @@ pub struct CompactingContextBuilder {
 }
 
 impl CompactingContextBuilder {
+    /// Wrap an inner builder with default [`ContextThresholds`] and a
+    /// [`NoopObserver`].
     #[must_use]
     pub fn new(inner: Box<dyn ContextBuilder>) -> Self {
         Self {
@@ -385,6 +427,7 @@ impl CompactingContextBuilder {
         }
     }
 
+    /// Override the compaction thresholds.
     #[must_use]
     pub fn with_thresholds(mut self, thresholds: ContextThresholds) -> Self {
         self.thresholds = thresholds;
@@ -520,6 +563,8 @@ pub struct PrefixedContextBuilder {
 }
 
 impl PrefixedContextBuilder {
+    /// Create a builder that inserts a system message with `prefix` before
+    /// delegating to `inner`.
     #[must_use]
     pub fn new(prefix: impl Into<String>, inner: Box<dyn ContextBuilder>) -> Self {
         Self {

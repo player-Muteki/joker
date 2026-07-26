@@ -4,6 +4,7 @@ use crate::app::{App, AgentNewState, Dialog, DialogKind};
 
 use super::{CommandAction, CommandInfo, CommandResult, SlashCommand};
 
+/// Slash command `/agent` for managing agent profiles.
 pub(super) struct AgentCommand;
 
 impl SlashCommand for AgentCommand {

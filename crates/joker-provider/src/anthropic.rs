@@ -42,8 +42,11 @@ pub const ANTHROPIC_BREAKPOINT_CAP: usize = 4;
 /// Configuration for the Anthropic provider.
 #[derive(Clone, Debug)]
 pub struct AnthropicConfig {
+    /// Base URL of the Anthropic API (defaults to [`DEFAULT_BASE_URL`]).
     pub base_url: String,
+    /// Model identifier (e.g. `"claude-sonnet-4-20250514"`).
     pub model: String,
+    /// Anthropic API key.
     pub api_key: String,
 }
 
@@ -60,15 +63,21 @@ impl AnthropicConfig {
 /// Errors specific to the Anthropic provider.
 #[derive(Debug, Error)]
 pub enum AnthropicProviderError {
+    /// The API key was empty or missing.
     #[error("Anthropic API key is missing; set ANTHROPIC_API_KEY")]
     MissingApiKey,
+    /// The API key could not be parsed as a valid HTTP header value.
     #[error("invalid authorization header")]
     InvalidAuthHeader,
+    /// An error returned by the Anthropic API.
     #[error("anthropic api error: {0}")]
     Api(String),
 }
 
 /// A model backed by the Anthropic Messages API.
+///
+/// Constructed via [`AnthropicModel::new`]; implements [`Model`](joker::Model)
+/// with streaming SSE support.
 #[derive(Clone, Debug)]
 pub struct AnthropicModel {
     config: AnthropicConfig,

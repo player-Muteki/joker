@@ -9,6 +9,8 @@ use ratatui::{
 use crate::app::App;
 use crate::widgets::{command_palette, composer, selector, transcript};
 
+/// Render the top-level TUI layout: header, transcript, composer,
+/// optional command palette, footer, and overlays.
 pub fn render(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
     let show_commands = app.composer.starts_with('/');

@@ -1,3 +1,11 @@
+//! Agent lifecycle driver that bridges the TUI event loop to the
+//! [`joker::Agent`] runtime.
+//!
+//! [`AgentDriver`] owns the [`joker::PermissionEngine`], builds [`joker::Agent`]
+//! instances with the correct model, tools, and policy chain, and spawns
+//! async agent runs.  [`ChannelObserver`] forwards [`joker::Event`] values
+//! into an mpsc channel as [`crate::event::UiEvent::Agent`].
+
 use std::{path::PathBuf, sync::Arc};
 
 use joker::{
@@ -16,12 +24,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{TuiError, event::UiEvent};
 
+/// An [`Observer`] that forwards [`joker::Event`] values into an mpsc channel.
 #[derive(Clone)]
 pub struct ChannelObserver {
     tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
 }
 
 impl ChannelObserver {
+    /// Create a new `ChannelObserver` that sends events through `tx`.
     #[must_use]
     pub fn new(tx: tokio::sync::mpsc::UnboundedSender<UiEvent>) -> Self {
         Self { tx }
@@ -38,6 +48,7 @@ impl Observer for ChannelObserver {
     }
 }
 
+/// Drives agent runs: builds [`Agent`] instances, manages permissions, and spawns async tasks.
 #[derive(Clone)]
 pub struct AgentDriver {
     runtime_config: RuntimeConfig,
@@ -63,6 +74,7 @@ impl std::fmt::Debug for AgentDriver {
 }
 
 impl AgentDriver {
+    /// Create an `AgentDriver` with agents stored under `<workspace>/.joker/agents`.
     #[must_use]
     pub fn new(runtime_config: RuntimeConfig, workspace: impl Into<PathBuf>) -> Self {
         let workspace: PathBuf = workspace.into();
@@ -73,6 +85,7 @@ impl AgentDriver {
         )
     }
 
+    /// Create an `AgentDriver` with a custom agents directory.
     #[must_use]
     pub fn new_with_agents_dir(
         runtime_config: RuntimeConfig,
@@ -118,38 +131,46 @@ impl AgentDriver {
         }
     }
 
+    /// Update the runtime configuration used to build subsequent agents.
     pub fn set_runtime_config(&mut self, runtime_config: RuntimeConfig) {
         self.runtime_config = runtime_config;
     }
 
+    /// Return the name of the currently active agent profile.
     #[must_use]
     pub fn active_agent(&self) -> &str {
         &self.active_agent
     }
 
+    /// Switch the active agent profile by name.
     pub fn set_active_agent(&mut self, agent_name: String) {
         self.active_agent = agent_name;
     }
 
+    /// Return a reference to the permission engine.
     #[must_use]
     pub fn permission_engine(&self) -> &PermissionEngine {
         &self.permission_engine
     }
 
+    /// Return a reference to the workspace path.
     #[must_use]
     pub fn workspace(&self) -> &PathBuf {
         &self.workspace
     }
 
+    /// Return a reference to the agents configuration directory.
     #[must_use]
     pub fn agents_dir(&self) -> &PathBuf {
         &self.agents_dir
     }
 
+    /// Return a mutable reference to the permission engine.
     pub fn permission_engine_mut(&mut self) -> &mut PermissionEngine {
         &mut self.permission_engine
     }
 
+    /// Spawn an async agent run for the given prompt.
     pub fn spawn_run(
         &self,
         prompt: String,
@@ -170,6 +191,7 @@ impl AgentDriver {
         }))
     }
 
+    /// Spawn an async agent run that continues from an existing conversation.
     pub fn spawn_run_with_conversation(
         &self,
         conversation: joker::Conversation,
@@ -190,6 +212,7 @@ impl AgentDriver {
         }))
     }
 
+    /// Set or clear the pending-compaction flag for the next agent run.
     pub fn set_compact_pending(&mut self, pending: bool) {
         self.compact_pending = pending;
     }

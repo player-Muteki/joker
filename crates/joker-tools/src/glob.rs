@@ -59,12 +59,14 @@ pub async fn glob_files(
     Ok(results)
 }
 
+/// A tool that finds files matching a glob pattern (respects `.gitignore`).
 #[derive(Clone, Debug)]
 pub struct GlobTool {
     workspace: WorkspaceTool,
 }
 
 impl GlobTool {
+    /// Create a new `GlobTool` rooted at the given workspace path.
     pub fn new(root: PathBuf) -> Self {
         Self {
             workspace: WorkspaceTool::new(root),

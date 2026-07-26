@@ -25,32 +25,35 @@ pub trait Hook: Send + Sync {
     ) {
     }
 
-    /// Called before the provider request is sent.
+    /// Called before the provider request is sent, with mutable access to messages.
     fn before_provider_request(&self, _messages: &mut Vec<Message>) {}
 
-    /// Called on session start.
+    /// Called when a session starts for the given agent.
     fn on_session_start(&self, _agent_name: &str) {}
 
-    /// Called on session end.
+    /// Called when a session ends for the given agent.
     fn on_session_end(&self, _agent_name: &str) {}
 }
 
-/// A registry of hooks that are all executed in order.
+/// A registry of [`Hook`]s that are all executed in order.
 #[derive(Default)]
 pub struct HookRegistry {
     hooks: Vec<Arc<dyn Hook>>,
 }
 
 impl HookRegistry {
+    /// Create an empty hook registry.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Register a hook.
     pub fn register(&mut self, hook: Arc<dyn Hook>) {
         self.hooks.push(hook);
     }
 
+    /// Run all registered `before_tool_call` hooks; returns `Err` on the first block.
     pub fn before_tool_call(
         &self,
         invocation: &ToolInvocation,
@@ -62,6 +65,7 @@ impl HookRegistry {
         Ok(())
     }
 
+    /// Run all registered `after_tool_call` hooks.
     pub fn after_tool_call(
         &self,
         invocation: &ToolInvocation,
@@ -73,18 +77,21 @@ impl HookRegistry {
         }
     }
 
+    /// Run all registered `before_provider_request` hooks.
     pub fn before_provider_request(&self, messages: &mut Vec<Message>) {
         for hook in &self.hooks {
             hook.before_provider_request(messages);
         }
     }
 
+    /// Run all registered `on_session_start` hooks.
     pub fn on_session_start(&self, agent_name: &str) {
         for hook in &self.hooks {
             hook.on_session_start(agent_name);
         }
     }
 
+    /// Run all registered `on_session_end` hooks.
     pub fn on_session_end(&self, agent_name: &str) {
         for hook in &self.hooks {
             hook.on_session_end(agent_name);

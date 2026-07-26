@@ -1,3 +1,10 @@
+//! Session persistence and management for agent conversations.
+//!
+//! The [`SessionStore`] trait defines the interface for saving, loading,
+//! listing, deleting, and forking sessions. [`JsonlSessionStore`] is an
+//! append-only JSONL-backed implementation that stores each session as
+//! `{id}.jsonl` with an `index.json` for fast metadata lookups.
+
 use std::{
     fs,
     path::PathBuf,
@@ -9,8 +16,11 @@ use thiserror::Error;
 
 use crate::{Conversation, error::BoxFutureResult};
 
+/// Future type returned by [`SessionStore::save`] and [`SessionStore::delete`].
 pub type SessionFuture<'a> = BoxFutureResult<'a, (), SessionError>;
+/// Future type returned by [`SessionStore::load`] and [`SessionStore::fork`].
 pub type SessionLoadFuture<'a> = BoxFutureResult<'a, Option<SessionData>, SessionError>;
+/// Future type returned by [`SessionStore::list`], [`SessionStore::path_to_root`], and [`SessionStore::children`].
 pub type SessionListFuture<'a> = BoxFutureResult<'a, Vec<SessionInfo>, SessionError>;
 
 /// Abstraction for persisting and restoring agent sessions.
@@ -41,32 +51,46 @@ pub trait SessionStore: Send + Sync {
 /// Metadata and conversation data for one session.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionData {
+    /// Unique identifier for the session.
     pub id: String,
+    /// Human-readable display label for the session.
     pub label: String,
-    pub created_at: u64, // unix seconds
+    /// Unix timestamp (seconds) when the session was created.
+    pub created_at: u64,
+    /// Unix timestamp (seconds) of the most recent update.
     pub updated_at: u64,
+    /// Model identifier used for this session.
     pub model: String,
+    /// Name of the agent associated with this session.
     pub agent_name: String,
-    /// Parent session ID for tree/fork branching (None = root session).
+    /// Parent session ID for tree/fork branching (`None` = root session).
     pub parent_id: Option<String>,
-    /// Root session ID for tree navigation (same as id for root sessions).
+    /// Root session ID for tree navigation (same as `id` for root sessions).
     pub root_id: String,
+    /// Full [`Conversation`] history for this session.
     pub conversation: Conversation,
 }
 
 /// Lightweight metadata for session listings (no full conversation).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionInfo {
+    /// Unique identifier for the session.
     pub id: String,
+    /// Human-readable display label for the session.
     pub label: String,
+    /// Unix timestamp (seconds) when the session was created.
     pub created_at: u64,
+    /// Unix timestamp (seconds) of the most recent update.
     pub updated_at: u64,
+    /// Model identifier used for this session.
     pub model: String,
+    /// Name of the agent associated with this session.
     pub agent_name: String,
     /// Parent session ID for tree/fork branching.
     pub parent_id: Option<String>,
     /// Root session ID.
     pub root_id: String,
+    /// Number of messages in the session conversation.
     pub message_count: usize,
 }
 
@@ -82,12 +106,16 @@ pub struct JsonlSessionStore {
 }
 
 impl JsonlSessionStore {
+    /// Create a new [`JsonlSessionStore`] rooted at `dir`.
+    ///
+    /// Creates the directory if it does not already exist.
     pub fn new(dir: impl Into<PathBuf>) -> Result<Self, SessionError> {
         let dir = dir.into();
         fs::create_dir_all(&dir).map_err(|e| SessionError::Io(e.to_string()))?;
         Ok(Self { dir })
     }
 
+    /// Return the filesystem path for the JSONL file of a given session ID.
     pub fn path_for(&self, id: &str) -> PathBuf {
         self.dir.join(format!("{id}.jsonl"))
     }
@@ -335,12 +363,16 @@ impl SessionStore for JsonlSessionStore {
 
 // ── Errors ──────────────────────────────────────────────────────────────
 
+/// Errors that can occur during session store operations.
 #[derive(Debug, Error)]
 pub enum SessionError {
+    /// An I/O error occurred (e.g. file read/write failure).
     #[error("io error: {0}")]
     Io(String),
+    /// A serialization or deserialization error occurred.
     #[error("serialization error: {0}")]
     Serde(String),
+    /// The requested session was not found.
     #[error("session not found: {0}")]
     NotFound(String),
 }

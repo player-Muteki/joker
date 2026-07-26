@@ -10,8 +10,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum CredentialError {
     #[error("io error: {0}")]
+    /// An I/O error occurred (file read/write).
     Io(String),
     #[error("serialization error: {0}")]
+    /// A serialization/deserialization error occurred (JSON).
     Serde(String),
 }
 
@@ -141,6 +143,7 @@ impl CredentialStore {
         self.credentials.len()
     }
 
+    /// Returns `true` if the credential store contains no entries.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.credentials.is_empty()

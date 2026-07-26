@@ -8,6 +8,7 @@ use ratatui::{
 
 use crate::{app::App, commands};
 
+/// Render the slash-command autocomplete palette below the composer.
 pub fn render(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let suggestions = commands::suggestions(&app.composer);
     let lines = if suggestions.is_empty() {

@@ -4,6 +4,7 @@ use crate::app::{App, TranscriptItem};
 
 use super::{CommandInfo, CommandResult, SlashCommand};
 
+/// Slash command `/compact` for requesting context compaction.
 pub(super) struct CompactCommand;
 
 impl SlashCommand for CompactCommand {

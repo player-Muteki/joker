@@ -157,12 +157,16 @@ impl McpClient {
 /// Errors that can occur during MCP client operations.
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
+    /// An error from the underlying transport layer.
     #[error("transport error: {0}")]
     Transport(#[from] TransportError),
+    /// A protocol-level error (e.g. serialization, missing initialization).
     #[error("protocol error: {0}")]
     Protocol(String),
+    /// An error returned by the MCP server itself.
     #[error("server error: {0}")]
     Server(String),
+    /// A JSON serialization or deserialization error.
     #[error("serde error: {0}")]
     Serde(#[from] serde_json::Error),
 }

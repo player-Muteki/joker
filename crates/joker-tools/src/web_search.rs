@@ -16,6 +16,7 @@ pub struct DuckDuckGoSearch {
 }
 
 impl DuckDuckGoSearch {
+    /// Create a new `DuckDuckGoSearch` backend with a default HTTP client.
     pub fn new() -> Result<Self, WebSearchError> {
         let client = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (compatible; JokerBot/1.0)")
@@ -210,6 +211,7 @@ pub struct WebSearchTool {
 }
 
 impl WebSearchTool {
+    /// Create a new `WebSearchTool` wrapping the given search backend.
     pub fn new(backend: Arc<dyn WebSearch>) -> Self {
         Self { backend }
     }

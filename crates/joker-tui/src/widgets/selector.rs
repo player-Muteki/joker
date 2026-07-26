@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem},
 };
 
+/// Render a modal selection dialog (provider, model, agent list).
 pub fn render(frame: &mut Frame<'_>, title: &str, options: &[(String, String)], selected: usize) {
     let area = frame.area();
 

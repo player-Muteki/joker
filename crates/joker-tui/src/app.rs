@@ -1,3 +1,11 @@
+//! Application state machine for the TUI.
+//!
+//! Defines [`App`], the central state struct that holds the composer buffer,
+//! transcript, dialog stack, and all runtime configuration.  Key events flow
+//! through [`App::handle_key`] which returns [`AppAction`] values; the driver
+//! loop in [`crate::terminal::run_tui`] dispatches those actions and feeds
+//! [`UiEvent`]s back through [`App::apply_ui_event`].
+
 use std::sync::Arc;
 use std::fmt;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -7,41 +15,66 @@ use tokio_util::sync::CancellationToken;
 
 use crate::event::UiEvent;
 
+/// Central application state for the Joker TUI.
 #[derive(Clone)]
 pub struct App {
+    /// Current text in the prompt composer line.
     pub composer: String,
+    /// Byte offset of the cursor within [`composer`](Self::composer).
     pub cursor: usize,
+    /// Ordered transcript of user messages, assistant replies, tool calls, and status lines.
     pub transcript: Vec<TranscriptItem>,
+    /// Whether an agent run is currently in progress.
     pub running: bool,
+    /// Set to `true` by [`quit`](Self::quit) to signal the event loop to exit.
     pub should_quit: bool,
+    /// Status-line text shown in the TUI header bar.
     pub status: String,
+    /// Scroll offset for the transcript viewport.
     pub scroll: u16,
+    /// Token used to cancel the current agent run.
     pub cancellation_token: Option<CancellationToken>,
+    /// Provider/model configuration for the current session.
     pub runtime_config: RuntimeConfig,
+    /// Active modal dialog, if any.
     pub dialog: Option<Dialog>,
     /// Shared approval channel for the current run
     pub approval_channel: Option<SharedApprovalChannel>,
+    /// Persistent session store (e.g. JSON-lines file).
     pub session_store: Option<Arc<dyn joker::SessionStore>>,
+    /// A previously-saved conversation loaded for continuation.
     pub loaded_conversation: Option<joker::Conversation>,
+    /// Flag to request context compaction on the next agent run.
     pub compact_requested: bool,
+    /// Persistent credential store for API keys.
     pub credential_store: joker::CredentialStore,
+    /// Active API-key input overlay state `(provider_id, buffer)`.
     pub api_key_input: Option<(String, String)>,
+    /// Models discovered for the current provider.
     pub available_models: Vec<String>,
     /// Agent management
     pub active_agent: String,
+    /// Names of all registered agent profiles.
     pub agent_names: Vec<String>,
+    /// Wizard state for the multi-step agent creation flow.
     pub agent_new_state: Option<AgentNewState>,
 }
 
+/// A modal selection dialog rendered over the main TUI.
 #[derive(Clone, Debug)]
 pub struct Dialog {
+    /// Discriminant determining dialog behaviour.
     pub kind: DialogKind,
+    /// Title text shown in the dialog border.
     pub title: String,
+    /// Pairs of `(display_label, value)` for each selectable option.
     pub options: Vec<(String, String)>,
+    /// Index of the currently highlighted option.
     pub selected: usize,
 }
 
 impl Dialog {
+    /// Return the `value` of the currently selected option.
     pub fn selected_value(&self) -> String {
         self.options
             .get(self.selected)
@@ -50,19 +83,33 @@ impl Dialog {
     }
 }
 
+/// Discriminant for the kind of modal dialog to show.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DialogKind {
+    /// Provider-selection dialog.
     Provider,
+    /// Model-selection dialog.
     Model,
-    ApiKeyInput { provider_id: String },
+    /// API-key input overlay for a specific provider.
+    ApiKeyInput {
+        /// Provider ID for which the key is being entered.
+        provider_id: String,
+    },
+    /// Agent-switching selection dialog.
     AgentSwitch,
-    AgentNew { step: usize },
+    /// Multi-step wizard for creating a new agent.
+    AgentNew {
+        /// Current step index in the wizard (0 = name, 1+ = permissions).
+        step: usize,
+    },
 }
 
 /// State machine for the multi-step agent creation wizard.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentNewState {
+    /// Name chosen for the new agent.
     pub agent_name: String,
+    /// Raw input buffer for the current wizard step.
     pub step_input: String,
 }
 
@@ -92,11 +139,13 @@ impl fmt::Debug for App {
 }
 
 impl App {
+    /// Create an `App` with default [`RuntimeConfig`].
     #[must_use]
     pub fn new() -> Self {
         Self::with_config(RuntimeConfig::default())
     }
 
+    /// Create an `App` with a specific [`RuntimeConfig`].
     #[must_use]
     pub fn with_config(runtime_config: RuntimeConfig) -> Self {
         let status = format!("Idle ({})", runtime_config.provider_label());
@@ -126,6 +175,10 @@ impl App {
         }
     }
 
+    /// Process a `KeyEvent` and return an optional [`AppAction`].
+    ///
+    /// Delegates to the active dialog, approval-request, or the default
+    /// keybindings for navigation, submission, cancellation, and quitting.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<AppAction> {
         // API key input mode: keys go to the input buffer
         if let Some((ref _provider_id, ref mut buffer)) = self.api_key_input {
@@ -368,6 +421,10 @@ impl App {
         }
     }
 
+    /// Submit the current composer text.
+    ///
+    /// If the text starts with `/` it is treated as a slash command;
+    /// otherwise it starts a new agent run.
     pub fn submit_prompt(&mut self) -> Option<AppAction> {
         let prompt = self.composer.trim().to_string();
         if prompt.is_empty() {
@@ -426,6 +483,7 @@ impl App {
         Some(AppAction::Redraw)
     }
 
+    /// Cancel the currently running agent via its [`CancellationToken`].
     pub fn cancel_running(&mut self) {
         if let Some(token) = &self.cancellation_token {
             token.cancel();
@@ -437,6 +495,7 @@ impl App {
             .push(TranscriptItem::Status("Cancelled".into()));
     }
 
+    /// Cancel any running agent and set [`should_quit`](Self::should_quit).
     pub fn quit(&mut self) {
         if self.running {
             self.cancel_running();
@@ -449,7 +508,7 @@ impl App {
         self.credential_store = joker::CredentialStore::with_file(path);
     }
 
-    /// Approve the pending tool with the given request_id.
+    /// Approve a pending tool-approval request by `request_id`.
     pub fn approve_pending(&mut self, request_id: &str, remember_for_session: bool) {
         if let Some(channel) = &self.approval_channel {
             channel.respond(joker::ApprovalResponse::Approved {
@@ -460,7 +519,7 @@ impl App {
             .push(TranscriptItem::Status(format!("Approved: {request_id}")));
     }
 
-    /// Deny the pending tool with the given request_id.
+    /// Deny a pending tool-approval request by `request_id`, optionally providing a `reason`.
     pub fn deny_pending(&mut self, request_id: &str, reason: Option<&str>) {
         if let Some(channel) = &self.approval_channel {
             channel.respond(joker::ApprovalResponse::Denied {
@@ -481,6 +540,7 @@ impl App {
         })
     }
 
+    /// Apply an incoming [`UiEvent`] to the application state.
     pub fn apply_ui_event(&mut self, event: UiEvent) {
         match event {
             UiEvent::Agent(event) => self.apply_agent_event(event),
@@ -809,54 +869,90 @@ impl Default for App {
     }
 }
 
+/// Action emitted by [`App`] for the driver loop to dispatch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AppAction {
+    /// Submit a user prompt for an agent run.
     Submit(String),
+    /// Execute a slash command.
     Command(String),
+    /// Cancel the current agent run.
     Cancel,
+    /// Quit the application entirely.
     Quit,
+    /// Request a re-draw of the TUI (no side effects).
     Redraw,
+    /// Confirmed a dialog selection.
     DialogConfirm {
+        /// Which dialog kind was confirmed.
         kind: DialogKind,
+        /// The selected value.
         selection: String,
     },
+    /// API key entered via the input overlay.
     ApiKeyConfirm {
+        /// Target provider ID.
         provider_id: String,
+        /// The raw API key value.
         api_key: String,
     },
+    /// Create a new agent from the wizard.
     AgentCreate {
+        /// Name for the new agent.
         name: String,
+        /// Pairs of `(display_label, permission_setting)` for each tool.
         tool_permissions: Vec<(String, String)>,
     },
 }
 
+/// An entry in the conversation transcript rendered in the TUI.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TranscriptItem {
+    /// A user-submitted message.
     User(String),
+    /// An assistant (model) response, possibly still streaming.
     Assistant {
+        /// Accumulated text so far.
         text: String,
+        /// Whether the model is still producing output.
         streaming: bool,
     },
+    /// A tool invocation and its outcome.
     Tool {
+        /// Unique tool-call identifier.
         call_id: String,
+        /// Human-readable tool name.
         name: String,
+        /// Current execution state of the tool.
         state: ToolState,
     },
+    /// A pending approval request awaiting user response.
     ApprovalRequest {
+        /// Identifier for this request.
         request_id: String,
+        /// Name of the tool requesting approval.
         tool_name: String,
+        /// Subject or context for the approval.
         subject: String,
+        /// Explanation of why approval is needed.
         reason: String,
     },
+    /// A status or informational message.
     Status(String),
+    /// An error message.
     Error(String),
 }
 
+/// Execution state of a tool call in the transcript.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolState {
+    /// Tool is currently executing.
     Running,
+    /// Tool has produced partial output.
     Progress(String),
+    /// Tool completed successfully with the given output.
     Done(String),
+    /// Tool failed with the given error message.
     Error(String),
 }
 

@@ -1,3 +1,9 @@
+//! Stream reconnection wrapper.
+//!
+//! [`ReconnectingModel`] wraps any [`Model`](joker::Model) and automatically
+//! retries the stream on connection failure, but only when no output events
+//! have been emitted yet.
+
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -7,7 +13,7 @@ use futures_core::Stream;
 use joker::{Model, ModelError, ModelFuture, ModelRequest, ModelResponseEvent, ModelStream};
 use tokio::time::sleep;
 
-/// Wraps an inner `Model` and retries the stream on connection failure,
+/// Wraps an inner [`Model`](joker::Model) and retries the stream on connection failure,
 /// but only when no output has been emitted yet.
 pub struct ReconnectingModel {
     inner: Arc<dyn Model>,
@@ -16,17 +22,22 @@ pub struct ReconnectingModel {
 }
 
 impl ReconnectingModel {
+    /// Create a new [`ReconnectingModel`] wrapping `inner`.
+    ///
+    /// Defaults to 3 retries with a 1-second base delay.
     #[must_use]
     pub fn new(inner: Arc<dyn Model>) -> Self {
         Self { inner, max_retries: 3, base_delay_ms: 1000 }
     }
 
+    /// Set the maximum number of retry attempts.
     #[must_use]
     pub fn with_max_retries(mut self, max: u32) -> Self {
         self.max_retries = max;
         self
     }
 
+    /// Set the base delay in milliseconds (doubled each retry via exponential backoff).
     #[must_use]
     pub fn with_base_delay_ms(mut self, ms: u64) -> Self {
         self.base_delay_ms = ms;

@@ -4,6 +4,7 @@ use crate::app::App;
 
 use super::{CommandAction, CommandInfo, CommandResult, SlashCommand};
 
+/// Slash command `/exit` for quitting the application.
 pub(super) struct QuitCommand;
 
 impl SlashCommand for QuitCommand {

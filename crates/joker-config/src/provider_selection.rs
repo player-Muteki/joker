@@ -1,14 +1,23 @@
+//! Provider selection — maps provider names to routes or scripted mode.
+
 use joker_provider::{Route, ALIBABA, ANTHROPIC, BAIDU, DEEPSEEK, GOOGLE, MOONSHOT, ZHIPUAI};
 
 use crate::error::ConfigError;
 
+/// Represents the active provider: either a scripted echo provider or a routed LLM.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProviderSelection {
-    Scripted { model: String },
+    /// Scripted mode returns a fixed response without calling any LLM.
+    Scripted {
+        /// Fixed model label used in scripted mode.
+        model: String,
+    },
+    /// A routed provider with a full connection specification.
     Route(Route),
 }
 
 impl ProviderSelection {
+    /// Returns the default scripted provider selection.
     #[must_use]
     pub fn scripted() -> Self {
         Self::Scripted {
@@ -16,6 +25,7 @@ impl ProviderSelection {
         }
     }
 
+    /// Select a provider by its well-known name (e.g. `"deepseek"`, `"anthropic"`, `"openai-compatible"`).
     pub fn preset(provider: &str) -> Result<Self, ConfigError> {
         match provider.trim().to_ascii_lowercase().as_str() {
             "" | "scripted" => Ok(Self::scripted()),

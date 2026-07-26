@@ -9,12 +9,19 @@ use crate::{
     agent::RunGuard,
 };
 
-/// Commands that can be sent to an active `AgentRuntime` run.
+/// Commands that can be sent to an active [`AgentRuntime`] run via the Op channel.
 #[derive(Clone, Debug)]
 pub enum Op {
+    /// Cancel the current run via the cancellation token.
     Cancel,
+    /// Trigger manual context compaction.
     Compact,
-    SwitchAgent { name: String },
+    /// Switch to a different agent profile mid-run.
+    SwitchAgent {
+        /// Name of the target agent profile.
+        name: String,
+    },
+    /// Signal the runtime to shut down gracefully.
     Shutdown,
 }
 
@@ -26,6 +33,7 @@ pub struct AgentRuntime {
 }
 
 impl AgentRuntime {
+    /// Wrap an [`Agent`] in a runtime with empty steer and follow-up queues.
     #[must_use]
     pub fn new(agent: Agent) -> Self {
         Self {
@@ -35,14 +43,21 @@ impl AgentRuntime {
         }
     }
 
+    /// Queue a steering message — injected before the next turn.
     pub fn steer(&self, message: impl Into<String>) {
         self.steering_queue.enqueue(message);
     }
 
+    /// Queue a follow-up message — injected after the tool-call loop ends.
     pub fn follow_up(&self, message: impl Into<String>) {
         self.follow_up_queue.enqueue(message);
     }
 
+    /// Drive a full agent run with Op-loop support (steer, cancel, compact, etc.).
+    ///
+    /// Reads [`Op`]s from `rx_op` before each turn, injects steering messages,
+    /// and after the inner tool-call loop injects follow-up messages for the
+    /// outer follow-up loop.
     pub async fn run(
         &self,
         mut request: RunRequest,

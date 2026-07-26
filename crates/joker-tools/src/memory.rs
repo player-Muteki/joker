@@ -38,6 +38,7 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
+    /// Create a new `MemoryStore` rooted at `.joker-memory` under the workspace.
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         let workspace = workspace.into();
         Self {
@@ -158,6 +159,7 @@ pub struct MemoryReadTool {
 }
 
 impl MemoryReadTool {
+    /// Create a new `MemoryReadTool` for the given workspace.
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
             store: Mutex::new(MemoryStore::new(workspace)),
@@ -243,6 +245,7 @@ pub struct MemoryWriteTool {
 }
 
 impl MemoryWriteTool {
+    /// Create a new `MemoryWriteTool` for the given workspace.
     pub fn new(workspace: impl Into<PathBuf>) -> Self {
         Self {
             store: Mutex::new(MemoryStore::new(workspace)),

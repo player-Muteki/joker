@@ -5,6 +5,7 @@ use thiserror::Error;
 
 use crate::error::BoxFutureResult;
 
+/// A future that resolves to a vector of [`SearchResult`]s or a [`WebSearchError`].
 pub type SearchFuture<'a> = BoxFutureResult<'a, Vec<SearchResult>, WebSearchError>;
 
 /// Abstract interface for web search providers.
@@ -35,14 +36,19 @@ impl fmt::Display for SearchResult {
 }
 
 /// Errors that can occur during a web search.
+/// Errors that can occur during a web search.
 #[derive(Debug, Error)]
 pub enum WebSearchError {
+    /// The HTTP request to the search service failed.
     #[error("search request failed: {0}")]
     Request(String),
+    /// The search backend returned an unexpected error.
     #[error("search backend returned an error: {0}")]
     Backend(String),
+    /// The search query was invalid or malformed.
     #[error("invalid query: {0}")]
     InvalidQuery(String),
+    /// The client was rate-limited by the search backend.
     #[error("rate limited")]
     RateLimited,
 }

@@ -5,6 +5,7 @@ use crate::app::{App, Dialog, DialogKind};
 
 use super::{CommandAction, CommandInfo, CommandResult, SlashCommand};
 
+/// Slash command `/provider` for selecting or switching the AI provider.
 pub(super) struct ProviderCommand;
 
 impl SlashCommand for ProviderCommand {

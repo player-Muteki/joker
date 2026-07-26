@@ -1,3 +1,10 @@
+//! Model discovery and vendor detection.
+//!
+//! Utilities for fetching available model IDs from a provider's API,
+//! identifying the vendor from a base URL, and guessing the correct
+//! [`Protocol`](crate::protocol::Protocol), [`Framing`](crate::protocol::Framing),
+//! and [`Auth`](crate::protocol::Auth) for a given endpoint.
+
 use serde::Deserialize;
 
 use crate::protocol::{Auth, Framing, Protocol};
@@ -13,6 +20,10 @@ struct ModelEntry {
     id: String,
 }
 
+/// Fetch available model IDs from a provider's API.
+///
+/// Tries several candidate URL patterns derived from `base_url` and returns
+/// the model IDs from the first successful response.
 pub async fn discover_models(base_url: &str, auth: &Auth) -> Result<Vec<String>, String> {
     let candidates = build_model_fetch_urls(base_url);
 
@@ -68,6 +79,9 @@ fn build_model_fetch_urls(base_url: &str) -> Vec<String> {
     candidates
 }
 
+/// Identify the vendor name from a base URL by matching known host patterns.
+///
+/// Returns `"unknown"` when no vendor is recognised.
 pub fn detect_vendor(base_url: &str) -> &'static str {
     let host = base_url
         .trim_start_matches("https://")
@@ -109,6 +123,7 @@ pub fn detect_vendor(base_url: &str) -> &'static str {
     }
 }
 
+/// Guess the wire [`Protocol`] for a base URL based on the vendor.
 pub fn guess_protocol(base_url: &str) -> Protocol {
     match detect_vendor(base_url) {
         "anthropic" => Protocol::AnthropicMessages,
@@ -117,6 +132,7 @@ pub fn guess_protocol(base_url: &str) -> Protocol {
     }
 }
 
+/// Guess the [`Framing`] for a given [`Protocol`].
 pub fn guess_framing(protocol: &Protocol) -> Framing {
     match protocol {
         Protocol::GoogleGemini => Framing::StreamableHttp,
@@ -124,6 +140,9 @@ pub fn guess_framing(protocol: &Protocol) -> Framing {
     }
 }
 
+/// Guess a sensible default [`Auth`] for a given [`Protocol`].
+///
+/// The guessed auth reads the API key from a well-known environment variable.
 pub fn guess_auth(protocol: &Protocol) -> Auth {
     match protocol {
         Protocol::ChatCompletions => Auth::bearer_from_env("OPENAI_COMPATIBLE_API_KEY"),

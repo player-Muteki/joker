@@ -29,10 +29,14 @@ use serde_json::json;
 
 use crate::workspace::{WorkspaceTool, parse_args};
 
+/// A single todo item with status tracking and progress-gated transitions.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TodoItem {
+    /// Unique identifier for this todo item.
     pub id: String,
-    pub status: String, // "pending", "in_progress", "completed"
+    /// Current status: `"pending"`, `"in_progress"`, or `"completed"`.
+    pub status: String,
+    /// Description of the todo item.
     pub content: String,
 }
 
@@ -115,6 +119,7 @@ pub async fn merge_todos(
     Ok(merged)
 }
 
+/// A tool that creates and updates todo items with progress gating.
 #[derive(Debug)]
 pub struct TodoWriteTool {
     workspace: WorkspaceTool,
@@ -122,6 +127,7 @@ pub struct TodoWriteTool {
 }
 
 impl TodoWriteTool {
+    /// Create a new `TodoWriteTool` rooted at the given workspace path.
     pub fn new(root: PathBuf) -> Self {
         Self {
             workspace: WorkspaceTool::new(root),

@@ -1,3 +1,10 @@
+//! Provider implementations for the joker model runtime.
+//!
+//! This crate provides concrete [`Model`](joker::Model) implementations backed
+//! by OpenAI-compatible, Anthropic Messages, and Google Gemini APIs, along with
+//! protocol/route abstractions, provider profiles, model discovery, and stream
+//! reconnection.
+
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
 #![warn(missing_docs)]

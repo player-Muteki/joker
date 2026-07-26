@@ -4,6 +4,7 @@ use crate::app::{App, ToolState, TranscriptItem};
 
 use super::{CommandAction, CommandInfo, CommandResult, SlashCommand};
 
+/// Slash command `/sessions` for listing, loading, and deleting saved sessions.
 pub(super) struct SessionsCommand;
 
 impl SlashCommand for SessionsCommand {

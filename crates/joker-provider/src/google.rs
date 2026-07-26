@@ -35,8 +35,11 @@ pub const API_VERSION: &str = "v1beta";
 /// Configuration for the Google/Gemini provider.
 #[derive(Clone, Debug)]
 pub struct GoogleConfig {
+    /// Base URL of the Gemini API (defaults to [`DEFAULT_BASE_URL`]).
     pub base_url: String,
+    /// Model identifier (e.g. `"gemini-2-5-flash"`).
     pub model: String,
+    /// Google API key.
     pub api_key: String,
 }
 
@@ -54,15 +57,21 @@ impl GoogleConfig {
 /// Errors specific to the Google provider.
 #[derive(Debug, Error)]
 pub enum GoogleProviderError {
+    /// The API key was empty or missing.
     #[error("Google API key is missing; set GOOGLE_GENERATIVE_AI_API_KEY")]
     MissingApiKey,
+    /// The API key could not be parsed as a valid HTTP header value.
     #[error("invalid authorization header")]
     InvalidAuthHeader,
+    /// An error returned by the Google API.
     #[error("google api error: {0}")]
     Api(String),
 }
 
 /// A model backed by the Google Gemini API.
+///
+/// Constructed via [`GoogleModel::new`]; implements [`Model`](joker::Model)
+/// with streaming SSE support via `streamGenerateContent`.
 #[derive(Clone, Debug)]
 pub struct GoogleModel {
     config: GoogleConfig,

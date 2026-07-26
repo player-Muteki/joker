@@ -1,3 +1,5 @@
+//! Configuration resolution — merges file config with CLI overrides into a [`RuntimeConfig`].
+
 use joker_provider::Route;
 
 use crate::error::ConfigError;
@@ -5,6 +7,7 @@ use crate::provider_selection::ProviderSelection;
 use crate::types::{ConfigOverrides, FileConfig};
 use crate::RuntimeConfig;
 
+/// Merge a [`FileConfig`] with CLI [`ConfigOverrides`] into a resolved [`RuntimeConfig`].
 pub fn resolve_config(
     file: FileConfig,
     overrides: ConfigOverrides,

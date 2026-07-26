@@ -1,3 +1,9 @@
+//! Command registry with fuzzy-matching autocomplete.
+//!
+//! [`CommandRegistry`] stores registered [`SlashCommand`] handlers and
+//! provides dispatch, autocomplete (prefix + fuzzy), and help-text
+//! generation.
+
 use std::sync::Arc;
 
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -20,6 +26,7 @@ pub struct CommandRegistry {
 }
 
 impl CommandRegistry {
+    /// Create an empty registry.
     #[must_use]
     pub fn new() -> Self {
         Self {
