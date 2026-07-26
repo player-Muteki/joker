@@ -309,7 +309,7 @@ impl AgentDriver {
                     &route.default_model
                 };
                 route.build_model_for(model)
-                    .map_err(|e| TuiError::Agent(e))
+                    .map_err(TuiError::Agent)
             }
         }
     }
@@ -368,14 +368,12 @@ impl ToolPolicy for ChainPolicy {
                     // Check for shell redirect downgrade
                     if first_decision == ToolDecision::Allow
                         && request2.invocation.name.as_str() == "shell"
-                    {
-                        if let Some(cmd) = request2
+                        && let Some(cmd) = request2
                             .invocation
                             .arguments
                             .get("command")
                             .and_then(|v| v.as_str())
-                        {
-                            if Self::has_redirect_operators(cmd) {
+                            && Self::has_redirect_operators(cmd) {
                                 return Ok(ToolDecision::Ask {
                                     request_id: "redirect-downgrade".into(),
                                     reason: format!(
@@ -384,8 +382,6 @@ impl ToolPolicy for ChainPolicy {
                                     ),
                                 });
                             }
-                        }
-                    }
                     self.second.evaluate(request2).await
                 }
             }

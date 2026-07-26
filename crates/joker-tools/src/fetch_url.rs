@@ -8,7 +8,7 @@ use serde_json::json;
 const MAX_FETCH_BYTES: usize = 1_000_000;
 
 /// SSRF-protected URL fetch tool.
-pub struct FetchUrlTool;
+pub(crate) struct FetchUrlTool;
 
 impl Default for FetchUrlTool {
     fn default() -> Self {
@@ -17,7 +17,7 @@ impl Default for FetchUrlTool {
 }
 
 impl FetchUrlTool {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 

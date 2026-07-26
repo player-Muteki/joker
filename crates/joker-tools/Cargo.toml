@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 joker = { path = "../joker" }
 async-trait = "0.1"
-base64.workspace = true
+base64 = "0.22"
 glob.workspace = true
 ignore.workspace = true
 serde.workspace = true

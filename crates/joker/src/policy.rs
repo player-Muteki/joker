@@ -2,37 +2,55 @@ use std::sync::Arc;
 
 use crate::{ToolDefinition, ToolInvocation, error::BoxFutureResult};
 
+/// Result type returned by [`ToolPolicy::evaluate`].
 pub type PolicyFuture<'a> = BoxFutureResult<'a, ToolDecision, std::convert::Infallible>;
 
+/// Decides whether a tool invocation is allowed, denied, or needs approval.
 pub trait ToolPolicy: Send + Sync {
+    /// Evaluate a tool invocation request and return a [`ToolDecision`].
     fn evaluate<'a>(&'a self, request: ToolPolicyRequest<'a>) -> PolicyFuture<'a>;
 }
 
+/// Input to [`ToolPolicy::evaluate`] describing a tool invocation to be checked.
 #[derive(Clone, Debug)]
 pub struct ToolPolicyRequest<'a> {
+    /// The tool invocation being evaluated.
     pub invocation: &'a ToolInvocation,
+    /// Optional tool definition with metadata like annotations.
     pub definition: Option<&'a ToolDefinition>,
 }
 
+/// Outcome of a policy evaluation for a tool invocation.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolDecision {
+    /// The tool invocation is permitted.
     Allow,
+    /// The tool invocation is denied with an explanation.
     Deny { reason: String },
+    /// The tool invocation requires user approval before proceeding.
     Ask { request_id: String, reason: String },
 }
 
+/// A request submitted for user approval via an approval channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalRequest {
+    /// Unique identifier for this approval request.
     pub request_id: String,
+    /// Name of the tool that triggered the request.
     pub tool_name: String,
+    /// Subject or context of the approval request.
     pub subject: String,
+    /// Human-readable explanation of why approval is needed.
     pub reason: String,
 }
 
+/// Response from a user to an [`ApprovalRequest`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApprovalResponse {
+    /// The request was approved, optionally remembered for the session.
     Approved { remember_for_session: bool },
+    /// The request was denied with an explanation.
     Denied { reason: String },
 }
 
@@ -55,21 +73,25 @@ struct SharedApprovalState {
 }
 
 impl SharedApprovalChannel {
+    /// Create a new `SharedApprovalChannel`.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Submit an [`ApprovalRequest`] for the user to respond to.
     pub fn submit(&self, request: ApprovalRequest) {
         let mut state = self.inner.lock().expect("approval channel lock");
         state.pending = Some(request);
         state.response = None;
     }
 
+    /// Supply an [`ApprovalResponse`] for the currently pending request.
     pub fn respond(&self, response: ApprovalResponse) {
         let mut state = self.inner.lock().expect("approval channel lock");
         state.response = Some(response);
     }
 
+    /// Consume and return the pending response, if any.
     pub fn take_response(&self) -> Option<ApprovalResponse> {
         let mut state = self.inner.lock().expect("approval channel lock");
         let resp = state.response.take();
@@ -79,6 +101,7 @@ impl SharedApprovalChannel {
         resp
     }
 
+    /// Return a clone of the current pending request, if any.
     pub fn pending_request(&self) -> Option<ApprovalRequest> {
         self.inner
             .lock()
@@ -87,6 +110,7 @@ impl SharedApprovalChannel {
             .clone()
     }
 
+    /// Record a tool name as approved for the remainder of the session.
     pub fn grant_for_session(&self, tool_name: impl Into<String>) {
         let tool_name = tool_name.into();
         let mut state = self.inner.lock().expect("approval channel lock");
@@ -95,6 +119,7 @@ impl SharedApprovalChannel {
         }
     }
 
+    /// Check whether a tool name has been session-approved.
     #[must_use]
     pub fn is_granted_for_session(&self, tool_name: &str) -> bool {
         self.inner
@@ -144,27 +169,32 @@ impl Default for PermissionPolicy {
 }
 
 impl PermissionPolicy {
+    /// Create an empty [`PermissionPolicy`] with the default "Ask for mutating" behaviour.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Set the explicit rules for this policy (builder pattern).
     #[must_use]
     pub fn with_rules(mut self, rules: Vec<PermissionRule>) -> Self {
         self.rules = rules;
         self
     }
 
+    /// Override the default decision for mutating tools (builder pattern).
     #[must_use]
     pub fn with_default_for_mutating(mut self, decision: ToolDecision) -> Self {
         self.default_for_mutating = decision;
         self
     }
 
+    /// Register a tool name as session-approved for this policy.
     pub fn add_session_allow(&mut self, tool_name: impl Into<String>) {
         self.session_allows.push(tool_name.into());
     }
 
+    /// Register a tool name as persisted-approved for this policy.
     pub fn add_persisted_allow(&mut self, tool_name: impl Into<String>) {
         self.persisted_allows.push(tool_name.into());
     }
@@ -230,14 +260,13 @@ impl ToolPolicy for PermissionPolicy {
 
             // Level 4: Shell chain detection (gemini-cli style)
             // Chained / redirected shell commands are never automatically trusted
-            if is_shell {
-                if let Some(cmd) = request
+            if is_shell
+                && let Some(cmd) = request
                     .invocation
                     .arguments
                     .get("command")
                     .and_then(|v| v.as_str())
-                {
-                    if self.shell_has_chaining(cmd) {
+                    && self.shell_has_chaining(cmd) {
                         return Ok(ToolDecision::Ask {
                             request_id: format!("ask-shell-chain-{}", now_nanos()),
                             reason: format!(
@@ -245,8 +274,6 @@ impl ToolPolicy for PermissionPolicy {
                             ),
                         });
                     }
-                }
-            }
 
             // Level 5: Tool annotation default
             if let Some(definition) = request.definition
@@ -267,11 +294,14 @@ impl ToolPolicy for PermissionPolicy {
 /// A single permission rule that matches against a tool invocation.
 #[derive(Clone, Debug)]
 pub struct PermissionRule {
+    /// Pattern the invocation must match for this rule to apply.
     pub pattern: RulePattern,
+    /// Decision to return when the pattern matches.
     pub decision: ToolDecision,
 }
 
 impl PermissionRule {
+    /// Create a new `PermissionRule` from a pattern and decision.
     #[must_use]
     pub fn new(pattern: RulePattern, decision: ToolDecision) -> Self {
         Self { pattern, decision }
@@ -285,13 +315,13 @@ impl PermissionRule {
 /// Patterns for matching tool invocations in permission rules.
 #[derive(Clone, Debug)]
 pub enum RulePattern {
-    /// Exact tool name match (e.g. "write_file")
+    /// Exact tool name match (e.g. `"write_file"`).
     ToolName(String),
-    /// Tool category match (e.g. Read, Write, Shell, Network)
+    /// Match any tool belonging to a [`ToolCategory`].
     ToolCategory(ToolCategory),
-    /// Path prefix match for file tools (e.g. "docs/")
+    /// Match file tools whose `path` argument starts with the given prefix.
     PathPrefix(String),
-    /// Command prefix match for shell tools (e.g. "git status")
+    /// Match shell tools whose `command` argument starts with the given prefix.
     CommandPrefix(String),
 }
 
@@ -326,9 +356,13 @@ impl RulePattern {
 /// Categories for classifying tools in permission rules.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolCategory {
+    /// Read-only tools (e.g. `read_file`, `grep`).
     Read,
+    /// Mutating tools (e.g. `write_file`, `edit_file`).
     Write,
+    /// Shell execution tools (e.g. `shell`, `bash`).
     Shell,
+    /// Network access tools (e.g. `web_search`, `fetch_url`).
     Network,
 }
 
@@ -358,6 +392,7 @@ impl ToolCategory {
 
 // ── Simple policy implementations ───────────────────────────────────────
 
+/// A [`ToolPolicy`] that allows every invocation unconditionally.
 #[derive(Default)]
 pub struct AllowAllPolicy;
 
@@ -367,6 +402,7 @@ impl ToolPolicy for AllowAllPolicy {
     }
 }
 
+/// A [`ToolPolicy`] that denies mutating tools and allows everything else.
 #[derive(Default)]
 pub struct DenyAllMutatingPolicy;
 
@@ -395,6 +431,7 @@ pub struct BashArityDict {
 }
 
 impl BashArityDict {
+    /// Create a dict populated with the built-in command prefixes and arities.
     #[must_use]
     pub fn new() -> Self {
         // Common tool command prefixes and their expected subcommand depth
@@ -476,8 +513,7 @@ impl BashArityDict {
         let trimmed = command.trim_start();
         // Try longest prefix first (greedy match)
         for (prefix, arity) in &self.entries {
-            if trimmed.starts_with(prefix) {
-                let after_prefix = &trimmed[prefix.len()..];
+            if let Some(after_prefix) = trimmed.strip_prefix(prefix) {
                 // Prefix must be followed by space, tab, or end-of-string
                 if after_prefix.is_empty() || after_prefix.starts_with(' ') || after_prefix.starts_with('\t') {
                     return Some((prefix, *arity));

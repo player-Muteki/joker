@@ -277,8 +277,8 @@ impl PermissionEngine {
             // of path, we can skip it at materialize time.
             if let Some(profile) = profile {
                 // Simple hard permission check
-                if let Some(PermissionSetting::Disabled) = &profile.hard_permission {
-                    if def.annotations.mutating {
+                if let Some(PermissionSetting::Disabled) = &profile.hard_permission
+                    && def.annotations.mutating {
                         // But only skip if there are no allow-override rules
                         let has_allow_override = profile.hard_permission_rules.iter().any(|r| {
                             (r.tool_pattern == "*" || r.tool_pattern == def.name.as_str())
@@ -288,7 +288,6 @@ impl PermissionEngine {
                             continue;
                         }
                     }
-                }
                 // Pattern-based hard permission: if the tool itself is hard-disabled
                 // with resource_pattern="**" and no allow overrides, skip it
                 let has_blanket_deny = profile.hard_permission_rules.iter().any(|r| {

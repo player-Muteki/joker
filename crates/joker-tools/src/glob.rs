@@ -13,7 +13,7 @@ use joker::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{WorkspaceTool, parse_args};
+use crate::workspace::{WorkspaceTool, parse_args};
 
 /// Standalone API: find files matching a glob pattern within a workspace.
 pub async fn glob_files(

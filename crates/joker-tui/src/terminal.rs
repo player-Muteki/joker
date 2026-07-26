@@ -390,15 +390,14 @@ fn sync_provider_after_change(
         let provider_id = route.id.clone();
         if let Some(api_key) = app.credential_store.get(&provider_id) {
             route.auth.credentials = CredentialSource::Value(api_key);
-        } else if let CredentialSource::EnvVar(env_var) = &route.auth.credentials {
-            if std::env::var(env_var).is_err() {
+        } else if let CredentialSource::EnvVar(env_var) = &route.auth.credentials
+            && std::env::var(env_var).is_err() {
                 app.api_key_input = Some((provider_id.clone(), String::new()));
                 app.transcript.push(TranscriptItem::Status(format!(
                     "Enter API key for {provider_id}."
                 )));
                 needs_api_key = true;
             }
-        }
     }
 
     driver.set_runtime_config(app.runtime_config.clone());

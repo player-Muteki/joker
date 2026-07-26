@@ -27,7 +27,7 @@ use joker::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{WorkspaceTool, parse_args};
+use crate::workspace::{WorkspaceTool, parse_args};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TodoItem {

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![deny(unreachable_pub)]
+#![warn(missing_docs)]
 
 pub mod app;
 pub mod cli;

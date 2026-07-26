@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 pub mod client;
 pub mod protocol;
 pub mod tool_adapter;
