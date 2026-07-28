@@ -178,13 +178,12 @@ impl Tool for MemoryReadTool {
                     "query": { "type": "string", "description": "Optional search term. Omit to list all." }
                 }
             }),
-            annotations: ToolAnnotations {
-                execution: ToolExecution::Sequential,
-                mutating: false,
-                timeout: None,
-                capabilities: vec![ToolCapability::ReadOnly],
-                default_approval: ApprovalRequirement::Auto,
-            },
+            annotations: ToolAnnotations::from_capabilities(
+                ToolExecution::Sequential,
+                vec![ToolCapability::ReadOnly],
+                None,
+                ApprovalRequirement::Auto,
+            ),
         }
     }
 
@@ -265,13 +264,12 @@ impl Tool for MemoryWriteTool {
                 },
                 "required": ["note"]
             }),
-            annotations: ToolAnnotations {
-                execution: ToolExecution::Sequential,
-                mutating: true,
-                timeout: None,
-                capabilities: vec![ToolCapability::WritesFiles],
-                default_approval: ApprovalRequirement::Auto,
-            },
+            annotations: ToolAnnotations::from_capabilities(
+                ToolExecution::Sequential,
+                vec![ToolCapability::WritesFiles],
+                None,
+                ApprovalRequirement::Auto,
+            ),
         }
     }
 

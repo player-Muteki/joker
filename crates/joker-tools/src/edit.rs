@@ -636,13 +636,12 @@ impl Tool for EditFileTool {
                 },
                 "required": ["path", "old_string", "new_string"]
             }),
-            annotations: ToolAnnotations {
-                execution: ToolExecution::Sequential,
-                mutating: true,
-                timeout: None,
-                capabilities: vec![ToolCapability::WritesFiles],
-                default_approval: ApprovalRequirement::Required,
-            },
+            annotations: ToolAnnotations::from_capabilities(
+                ToolExecution::Sequential,
+                vec![ToolCapability::WritesFiles],
+                None,
+                ApprovalRequirement::Required,
+            ),
         }
     }
 

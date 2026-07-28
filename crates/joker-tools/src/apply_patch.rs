@@ -150,13 +150,12 @@ impl Tool for ApplyPatchTool {
                 },
                 "required": ["path", "patch"]
             }),
-            annotations: ToolAnnotations {
-                execution: ToolExecution::Sequential,
-                mutating: true,
-                timeout: None,
-                capabilities: vec![ToolCapability::WritesFiles],
-                default_approval: ApprovalRequirement::Required,
-            },
+            annotations: ToolAnnotations::from_capabilities(
+                ToolExecution::Sequential,
+                vec![ToolCapability::WritesFiles],
+                None,
+                ApprovalRequirement::Required,
+            ),
         }
     }
 

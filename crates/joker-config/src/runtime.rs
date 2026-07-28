@@ -2,10 +2,16 @@
 //!
 //! [`RuntimeConfig`] merges the on-disk [`FileConfig`] with CLI overrides
 //! and provides convenience methods for querying the active provider and model.
+//!
+//! Reference: gemini-cli's five-layer config hierarchy (built-in → global →
+//! workspace → CLI) and OpenCode's Directory Snapshot pattern for loading
+//! all config sources into one resolved snapshot.
+
+use std::collections::BTreeMap;
 
 use crate::error::ConfigError;
 use crate::provider_selection::ProviderSelection;
-use crate::types::FileConfig;
+use crate::types::{AgentProfileConfig, FileConfig, McpServerConfig};
 
 /// The resolved configuration used throughout the application at runtime.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,6 +22,10 @@ pub struct RuntimeConfig {
     pub scripted_response: String,
     /// Whether demo/debug tools are enabled.
     pub demo_tool: bool,
+    /// Resolved agent profile configs (preserved for restart).
+    pub agent_configs: BTreeMap<String, AgentProfileConfig>,
+    /// Resolved MCP server configs (preserved for restart).
+    pub mcp_server_configs: BTreeMap<String, McpServerConfig>,
 }
 
 impl Default for RuntimeConfig {
@@ -24,6 +34,8 @@ impl Default for RuntimeConfig {
             provider: ProviderSelection::scripted(),
             scripted_response: "Hello from Joker TUI.".into(),
             demo_tool: false,
+            agent_configs: BTreeMap::new(),
+            mcp_server_configs: BTreeMap::new(),
         }
     }
 }
@@ -117,6 +129,9 @@ impl RuntimeConfig {
     }
 
     /// Convert this runtime config back into a serializable [`FileConfig`].
+    ///
+    /// Preserves agent and MCP server configs so they survive restart
+    /// (OUTLINE.md 10.3: "Preserve resolved agent configs and mcp server configs").
     #[must_use]
     pub fn to_file_config(&self) -> FileConfig {
         FileConfig {
@@ -151,8 +166,8 @@ impl RuntimeConfig {
             demo_tool: Some(self.demo_tool),
             providers: std::collections::BTreeMap::new(),
             default_agent: None,
-            agent: std::collections::BTreeMap::new(),
-            mcp_servers: std::collections::BTreeMap::new(),
+            agent: self.agent_configs.clone(),
+            mcp_servers: self.mcp_server_configs.clone(),
         }
     }
 }

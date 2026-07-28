@@ -367,18 +367,67 @@ fn streaming_text_events(text: &str) -> Vec<ModelResponseEvent> {
 }
 
 /// Compose two `ToolPolicy` impls: first's Deny takes priority, then delegates to second.
-/// Also downgrades Allow→Ask for shell commands with redirect/pipeline operators.
+/// Also evaluates shell command chains segment-by-segment (reference: gemini-cli's
+/// `checkShellCommand` which splits on separators and checks each subcommand).
+///
+/// Chain detection: a command like `git log ; rm -rf /` is split on `;`, `&&`, `||`, `|`
+/// and each segment is checked independently. If any segment is denied, the entire
+/// command is denied. If any segment triggers Ask, the entire command is downgraded.
 struct ChainPolicy {
     first: Arc<dyn ToolPolicy>,
     second: Arc<dyn ToolPolicy>,
 }
 
-/// Shell operators that trigger `Allow` → `Ask` downgrade.
-const SHELL_REDIRECT_PATTERNS: &[&str] = &["|", ">", "$(", "`"];
+/// Shell operators that trigger chain detection.
+const CHAIN_SEPARATORS: &[&str] = &["&&", "||", ";", "|", "`", "$("];
+
+/// Arity-aware trusted prefixes: "git log" matches only "git log ...", not "git push".
+/// Reference: CodeWhale's BashArityDict for distinction between "git" and "git log".
+const ARITY_TRUSTED_COMMANDS: &[&str] = &[
+    // Rust toolchain
+    "cargo test", "cargo build", "cargo check", "cargo fmt",
+    "cargo clippy", "cargo doc", "cargo run",
+    // Git (reading)
+    "git status", "git diff", "git log", "git show",
+    "git branch", "git stash", "git blame",
+    // File inspection
+    "ls ", "cat ", "head ", "tail ", "echo ", "pwd", "whoami",
+    "date", "which ", "type ", "file ",
+    // Directory creation
+    "mkdir ", "touch ",
+];
 
 impl ChainPolicy {
+    /// Split a shell command into segments on chain separators.
+    /// Reference: gemini-cli's `splitCommands()` in shell-utils.ts.
+    fn split_command_chain(command: &str) -> Vec<String> {
+        let mut segments = vec![command.to_string()];
+        for sep in CHAIN_SEPARATORS {
+            let mut new_segments = Vec::new();
+            for seg in &segments {
+                let split: Vec<&str> = seg.split(sep).collect();
+                new_segments.extend(split.iter().map(|s| s.to_string()));
+            }
+            segments = new_segments;
+        }
+        segments.retain(|s| !s.trim().is_empty());
+        segments
+    }
+
+    /// Check if a command prefix is trusted with arity awareness.
+    /// "git log" matches "git log --oneline" but NOT "git push".
+    /// Reference: CodeWhale's BashArityDict.
+    fn is_arity_trusted(command: &str) -> bool {
+        let trimmed = command.trim();
+        ARITY_TRUSTED_COMMANDS
+            .iter()
+            .any(|prefix| trimmed.starts_with(prefix))
+    }
+
+    /// Check if a command contains redirection/pipeline operators.
     fn has_redirect_operators(command: &str) -> bool {
-        SHELL_REDIRECT_PATTERNS
+        const REDIRECT_PATTERNS: &[&str] = &["|", ">", "$(", "`"];
+        REDIRECT_PATTERNS
             .iter()
             .any(|op| command.contains(op))
     }
@@ -392,23 +441,62 @@ impl ToolPolicy for ChainPolicy {
             match first_decision {
                 ToolDecision::Deny { .. } => Ok(first_decision),
                 _ => {
-                    // Check for shell redirect downgrade
-                    if first_decision == ToolDecision::Allow
-                        && request2.invocation.name.as_str() == "shell"
-                        && let Some(cmd) = request2
+                    // ── Shell command chain detection ──────────────────
+                    // If this is a shell command, check each segment.
+                    // Reference: gemini-cli's checkShellCommand() which:
+                    // 1. Splits on separators
+                    // 2. Checks each segment independently
+                    // 3. DENY from any segment is terminal
+                    // 4. ASK_USER from any segment downgrades ALLOW
+                    if request2.invocation.name.as_str() == "shell" {
+                        if let Some(cmd) = request2
                             .invocation
                             .arguments
                             .get("command")
                             .and_then(|v| v.as_str())
-                            && Self::has_redirect_operators(cmd) {
-                                return Ok(ToolDecision::Ask {
-                                    request_id: "redirect-downgrade".into(),
-                                    reason: format!(
-                                        "shell command contains redirect/pipeline operators ({:?})",
-                                        SHELL_REDIRECT_PATTERNS
-                                    ),
-                                });
+                        {
+                            let segments = Self::split_command_chain(cmd);
+
+                            // Check each segment's trust level
+                            let mut worst_decision: Option<ToolDecision> = None;
+                            for segment in &segments {
+                                let seg_trimmed = segment.trim();
+                                if seg_trimmed.is_empty() {
+                                    continue;
+                                }
+
+                                // Check if this individual segment is arity-trusted
+                                let is_trusted = Self::is_arity_trusted(seg_trimmed);
+
+                                // If any segment is not trusted, downgrade the whole command
+                                if !is_trusted {
+                                    // Not arity-trusted: check redirect/pipeline
+                                    if Self::has_redirect_operators(seg_trimmed) {
+                                        worst_decision = Some(ToolDecision::Ask {
+                                            request_id: "chain-redirect".into(),
+                                            reason: format!(
+                                                "shell segment '{:.60}' contains redirect/pipeline operators",
+                                                seg_trimmed
+                                            ),
+                                        });
+                                    } else if !matches!(worst_decision, Some(ToolDecision::Deny { .. })) {
+                                        worst_decision = Some(ToolDecision::Ask {
+                                            request_id: "chain-unknown".into(),
+                                            reason: format!(
+                                                "shell segment '{:.60}' is not in trusted command list",
+                                                seg_trimmed
+                                            ),
+                                        });
+                                    }
+                                }
                             }
+
+                            if let Some(decision) = worst_decision {
+                                return Ok(decision);
+                            }
+                        }
+                    }
+
                     self.second.evaluate(request2).await
                 }
             }

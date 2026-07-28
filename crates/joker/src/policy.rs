@@ -291,7 +291,7 @@ impl ToolPolicy for PermissionPolicy {
 
             // Level 5: Tool annotation default
             if let Some(definition) = request.definition
-                && definition.annotations.mutating {
+                && definition.annotations.is_mutating() {
                     let mut decision = self.default_for_mutating.clone();
                     if let ToolDecision::Ask { request_id, .. } = &mut decision {
                         *request_id = format!("ask-{}", tool_name);
@@ -424,7 +424,7 @@ impl ToolPolicy for DenyAllMutatingPolicy {
     fn evaluate<'a>(&'a self, request: ToolPolicyRequest<'a>) -> PolicyFuture<'a> {
         Box::pin(async move {
             match request.definition {
-                Some(definition) if definition.annotations.mutating => Ok(ToolDecision::Deny {
+                Some(definition) if definition.annotations.is_mutating() => Ok(ToolDecision::Deny {
                     reason: "mutating tools are denied".into(),
                 }),
                 _ => Ok(ToolDecision::Allow),

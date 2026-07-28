@@ -103,6 +103,8 @@ fn sessions_load(app: &mut App, id: &str) -> CommandResult {
             Ok(Some(data)) => {
                 app.transcript.clear();
                 app.loaded_conversation = Some(data.conversation.clone());
+                app.loaded_session_id = Some(data.id.clone());
+                app.loaded_root_id = Some(data.root_id.clone());
                 app.active_agent = data.agent_name.clone();
                 for msg in data.conversation.into_messages() {
                     match msg.role {

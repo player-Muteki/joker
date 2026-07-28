@@ -168,13 +168,12 @@ impl Tool for TodoWriteTool {
                 },
                 "required": ["todos"]
             }),
-            annotations: ToolAnnotations {
-                execution: ToolExecution::Sequential,
-                mutating: true,
-                timeout: None,
-                capabilities: vec![ToolCapability::WritesFiles],
-                default_approval: ApprovalRequirement::Auto,
-            },
+            annotations: ToolAnnotations::from_capabilities(
+                ToolExecution::Sequential,
+                vec![ToolCapability::WritesFiles],
+                None,
+                ApprovalRequirement::Auto,
+            ),
         }
     }
 

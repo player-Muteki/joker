@@ -95,6 +95,53 @@ impl Default for ToolAnnotations {
     }
 }
 
+impl ToolAnnotations {
+    /// Returns `true` if any capability implies mutation, or if the
+    /// legacy `mutating` field is set to `true`.
+    ///
+    /// Checks both the capabilities-derived value AND the legacy field
+    /// for backward compatibility (tests and examples may set only
+    /// `mutating` without updating capabilities).
+    #[must_use]
+    pub fn is_mutating(&self) -> bool {
+        self.mutating || self.capabilities.iter().any(|c| c.is_mutating())
+    }
+
+    /// Returns `true` if any capability implies network access.
+    #[must_use]
+    pub fn is_network(&self) -> bool {
+        self.capabilities.iter().any(|c| c.is_network())
+    }
+
+    /// Returns `true` if any capability implies sandboxability.
+    #[must_use]
+    pub fn is_sandboxable(&self) -> bool {
+        self.capabilities.iter().any(|c| c.is_sandboxable())
+    }
+
+    /// Create a new `ToolAnnotations` from capabilities, deriving `mutating`
+    /// automatically.  This is the preferred constructor going forward.
+    ///
+    /// Reference: CodeWhale's `ToolSpec` trait which derives
+    /// `is_read_only` / `is_sandboxable` / `supports_parallel` from capabilities.
+    #[must_use]
+    pub fn from_capabilities(
+        execution: ToolExecution,
+        capabilities: Vec<ToolCapability>,
+        timeout: Option<std::time::Duration>,
+        default_approval: ApprovalRequirement,
+    ) -> Self {
+        let mutating = capabilities.iter().any(|c| c.is_mutating());
+        Self {
+            execution,
+            mutating,
+            timeout,
+            capabilities,
+            default_approval,
+        }
+    }
+}
+
 /// Whether a [`Tool`] is safe to execute concurrently with other tools.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -106,6 +153,9 @@ pub enum ToolExecution {
 }
 
 /// What kind of side effects a [`Tool`] has.
+///
+/// Reference: CodeWhale's `ToolCapability` enum with ReadOnly / WritesFiles /
+/// ExecutesCode / Network / Sandboxable / RequiresApproval variants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolCapability {
@@ -117,6 +167,33 @@ pub enum ToolCapability {
     ExecutesCode,
     /// The tool can make network requests.
     Network,
+    /// The tool can be run in a sandbox for isolation.
+    Sandboxable,
+    /// The tool inherently requires user approval before execution.
+    RequiresApproval,
+}
+
+impl ToolCapability {
+    /// Returns `true` if the capability implies the tool mutates state.
+    #[must_use]
+    pub fn is_mutating(self) -> bool {
+        matches!(
+            self,
+            ToolCapability::WritesFiles | ToolCapability::ExecutesCode
+        )
+    }
+
+    /// Returns `true` if the capability implies the tool makes network requests.
+    #[must_use]
+    pub fn is_network(self) -> bool {
+        matches!(self, ToolCapability::Network)
+    }
+
+    /// Returns `true` if the capability implies the tool can be sandboxed.
+    #[must_use]
+    pub fn is_sandboxable(self) -> bool {
+        matches!(self, ToolCapability::Sandboxable | ToolCapability::ExecutesCode)
+    }
 }
 
 /// Default approval level required before a [`Tool`] can execute.

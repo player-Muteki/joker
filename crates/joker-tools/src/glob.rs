@@ -106,13 +106,12 @@ impl Tool for GlobTool {
                 },
                 "required": ["pattern"]
             }),
-            annotations: ToolAnnotations {
-                execution: ToolExecution::ParallelSafe,
-                mutating: false,
-                timeout: None,
-                capabilities: vec![ToolCapability::ReadOnly],
-                default_approval: ApprovalRequirement::Auto,
-            },
+            annotations: ToolAnnotations::from_capabilities(
+                ToolExecution::ParallelSafe,
+                vec![ToolCapability::ReadOnly],
+                None,
+                ApprovalRequirement::Auto,
+            ),
         }
     }
 

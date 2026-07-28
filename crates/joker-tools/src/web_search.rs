@@ -230,13 +230,12 @@ impl Tool for WebSearchTool {
                 },
                 "required": ["query"]
             }),
-            annotations: ToolAnnotations {
-                execution: ToolExecution::Sequential,
-                mutating: false,
-                timeout: Some(std::time::Duration::from_secs(20)),
-                capabilities: vec![ToolCapability::Network],
-                default_approval: ApprovalRequirement::Suggest,
-            },
+            annotations: ToolAnnotations::from_capabilities(
+                ToolExecution::Sequential,
+                vec![ToolCapability::Network],
+                Some(std::time::Duration::from_secs(20)),
+                ApprovalRequirement::Suggest,
+            ),
         }
     }
 

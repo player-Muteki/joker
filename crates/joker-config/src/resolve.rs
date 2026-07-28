@@ -44,6 +44,11 @@ pub fn resolve_config(
             };
         }
 
+    // Preserve agent profile configs and MCP server configs for restart
+    // (OUTLINE.md 10.3: modified RuntimeConfig to retain resolved configs).
+    config.agent_configs = file.agent.clone();
+    config.mcp_server_configs = file.mcp_servers.clone();
+
     Ok(config)
 }
 

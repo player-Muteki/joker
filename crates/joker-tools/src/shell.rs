@@ -3,9 +3,6 @@ use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 use tracing::*;
 
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
-
 use joker::{
     ApprovalRequirement, Tool, ToolAnnotations, ToolCapability, ToolDefinition, ToolError,
     ToolExecution, ToolFuture, ToolInvocation, ToolName, ToolOutput,
@@ -118,13 +115,12 @@ impl Tool for ShellTool {
                 },
                 "required": ["command"]
             }),
-            annotations: ToolAnnotations {
-                execution: ToolExecution::Sequential,
-                mutating: true,
-                timeout: Some(std::time::Duration::from_secs(120)),
-                capabilities: vec![ToolCapability::ExecutesCode],
-                default_approval: ApprovalRequirement::Required,
-            },
+            annotations: ToolAnnotations::from_capabilities(
+                ToolExecution::Sequential,
+                vec![ToolCapability::ExecutesCode, ToolCapability::Sandboxable],
+                Some(std::time::Duration::from_secs(120)),
+                ApprovalRequirement::Required,
+            ),
         }
     }
 

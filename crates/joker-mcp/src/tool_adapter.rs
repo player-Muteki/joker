@@ -72,13 +72,15 @@ impl Tool for McpToolAdapter {
             name: self.name.clone(),
             description: self.description.clone(),
             input_schema: self.input_schema.clone(),
-            annotations: ToolAnnotations {
-                execution: ToolExecution::Sequential,
-                mutating: false,
-                timeout: Some(std::time::Duration::from_secs(30)),
-                capabilities: vec![ToolCapability::Network],
-                default_approval: ApprovalRequirement::Auto,
-            },
+            annotations: ToolAnnotations::from_capabilities(
+                ToolExecution::Sequential,
+                vec![ToolCapability::Network],
+                Some(std::time::Duration::from_secs(30)),
+                // Default to Suggest for unknown MCP tools — the agent profile
+                // should determine real permissions, but Auto is too permissive
+                // for dynamic tools (OUTLINE.md 9.12: MCP default should be Suggest).
+                ApprovalRequirement::Suggest,
+            ),
         }
     }
 

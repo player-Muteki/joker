@@ -44,6 +44,11 @@ pub struct App {
     pub session_store: Option<Arc<dyn joker::SessionStore>>,
     /// A previously-saved conversation loaded for continuation.
     pub loaded_conversation: Option<joker::Conversation>,
+    /// The session id that was loaded (set by `/sessions load`).
+    /// Used as `parent_id` when saving the next run to maintain the session tree.
+    pub loaded_session_id: Option<String>,
+    /// Root session id from the loaded session, for tree navigation.
+    pub loaded_root_id: Option<String>,
     /// Flag to request context compaction on the next agent run.
     pub compact_requested: bool,
     /// Persistent credential store for API keys.
@@ -165,6 +170,8 @@ impl App {
             approval_channel: None,
             session_store: None,
             loaded_conversation: None,
+            loaded_session_id: None,
+            loaded_root_id: None,
             compact_requested: false,
             credential_store: joker::CredentialStore::new(),
             api_key_input: None,
@@ -606,7 +613,16 @@ impl App {
                 })
                 .unwrap_or_else(|| "conversation".to_string());
 
+            // Inherit parent_id/root_id from loaded session (OUTLINE.md 10.4).
+            // If this run was loaded from a saved session, the new session becomes
+            // a fork of the loaded one, maintaining the session tree.
+            // Reference: pi's session tree model with branch/fork entries.
             let id = format!("{}-{:04x}", now, rand_u16());
+            let parent_id = self.loaded_session_id.clone();
+            let root_id = self
+                .loaded_root_id
+                .clone()
+                .unwrap_or_else(|| id.clone());
             let agent_name = self.active_agent.clone();
             let data = joker::SessionData {
                 id: id.clone(),
@@ -615,8 +631,8 @@ impl App {
                 updated_at: now,
                 model,
                 agent_name,
-                parent_id: None,
-                root_id: id,
+                parent_id,
+                root_id,
                 conversation: outcome.conversation,
             };
 

@@ -401,7 +401,7 @@ impl PermissionEngine {
             if let Some(profile) = profile {
                 // Simple hard permission check
                 if let Some(PermissionSetting::Disabled) = &profile.hard_permission
-                    && def.annotations.mutating {
+                    && def.annotations.is_mutating() {
                         // But only skip if there are no allow-override rules
                         let has_allow_override = profile.hard_permission_rules.iter().any(|r| {
                             (r.tool_pattern == "*" || r.tool_pattern == def.name.as_str())
@@ -500,7 +500,7 @@ impl ToolPolicy for EnginePolicy {
     fn evaluate<'a>(&'a self, request: ToolPolicyRequest<'a>) -> PolicyFuture<'a> {
         let is_mutating = request
             .definition
-            .map(|d| d.annotations.mutating)
+            .map(|d| d.annotations.is_mutating())
             .unwrap_or(true);
         let decision = self
             .engine

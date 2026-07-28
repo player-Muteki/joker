@@ -136,13 +136,12 @@ impl Tool for FetchUrlTool {
                 },
                 "required": ["url"]
             }),
-            annotations: ToolAnnotations {
-                execution: ToolExecution::Sequential,
-                mutating: false,
-                timeout: Some(std::time::Duration::from_secs(30)),
-                capabilities: vec![ToolCapability::Network],
-                default_approval: ApprovalRequirement::Suggest,
-            },
+            annotations: ToolAnnotations::from_capabilities(
+                ToolExecution::Sequential,
+                vec![ToolCapability::Network, ToolCapability::RequiresApproval],
+                Some(std::time::Duration::from_secs(30)),
+                ApprovalRequirement::Suggest,
+            ),
         }
     }
 
