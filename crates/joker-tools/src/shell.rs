@@ -10,21 +10,45 @@ use joker::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::workspace::{parse_args, truncate_at_char_boundary, WorkspaceTool};
+use crate::workspace::{WorkspaceTool, parse_args, truncate_at_char_boundary};
 
 const TRUSTED_COMMAND_PREFIXES: &[&str] = &[
-    "cargo ", "cargo test", "cargo build", "cargo check", "cargo fmt",
-    "cargo clippy", "cargo doc",
-    "git ", "git status", "git diff", "git log", "git show",
-    "git branch", "git stash",
-    "ls ", "cat ", "head ", "tail ", "echo ", "pwd", "whoami",
-    "date", "which ", "type ",
-    "mkdir ", "touch ",
+    "cargo ",
+    "cargo test",
+    "cargo build",
+    "cargo check",
+    "cargo fmt",
+    "cargo clippy",
+    "cargo doc",
+    "git ",
+    "git status",
+    "git diff",
+    "git log",
+    "git show",
+    "git branch",
+    "git stash",
+    "ls ",
+    "cat ",
+    "head ",
+    "tail ",
+    "echo ",
+    "pwd",
+    "whoami",
+    "date",
+    "which ",
+    "type ",
+    "mkdir ",
+    "touch ",
 ];
 
 const BLOCKED_ENV_VARS: &[&str] = &[
-    "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "LD_DEBUG",
-    "SHELL", "HOME", "PATH",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "LD_DEBUG",
+    "SHELL",
+    "HOME",
+    "PATH",
 ];
 
 const CHAIN_SEPARATORS: &[&str] = &["&&", "||", ";", "|", "`", "$("];
@@ -51,7 +75,9 @@ impl ShellTool {
     #[allow(dead_code)]
     fn is_trusted_command(command: &str) -> bool {
         let trimmed = command.trim();
-        TRUSTED_COMMAND_PREFIXES.iter().any(|prefix| trimmed.starts_with(prefix))
+        TRUSTED_COMMAND_PREFIXES
+            .iter()
+            .any(|prefix| trimmed.starts_with(prefix))
     }
 
     fn analyse_command_safety(command: &str) -> Vec<String> {
@@ -70,9 +96,10 @@ impl ShellTool {
 
             if trimmed.contains("..")
                 && (trimmed.contains('/') || trimmed.contains('~'))
-                && trimmed.contains("../../") {
-                    warnings.push("path traversal detected".into());
-                }
+                && trimmed.contains("../../")
+            {
+                warnings.push("path traversal detected".into());
+            }
 
             if trimmed.contains(" &") || trimmed.ends_with('&') {
                 warnings.push("background execution may cause unexpected behavior".into());
@@ -131,7 +158,9 @@ impl Tool for ShellTool {
             let command_str = args.command.trim().to_string();
 
             if command_str.is_empty() {
-                return Err(ToolError::InvalidArguments("command cannot be empty".into()));
+                return Err(ToolError::InvalidArguments(
+                    "command cannot be empty".into(),
+                ));
             }
 
             let safety_warnings = Self::analyse_command_safety(&command_str);
@@ -254,7 +283,12 @@ impl Tool for ShellTool {
     }
 }
 
-fn build_ring_buffer(stdout: &[u8], stderr: &[u8], max_stdout: usize, max_stderr: usize) -> (String, String, Option<PathBuf>) {
+fn build_ring_buffer(
+    stdout: &[u8],
+    stderr: &[u8],
+    max_stdout: usize,
+    max_stderr: usize,
+) -> (String, String, Option<PathBuf>) {
     let stdout_str = String::from_utf8_lossy(stdout);
     let stderr_str = String::from_utf8_lossy(stderr);
 

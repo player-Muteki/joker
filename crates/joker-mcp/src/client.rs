@@ -41,9 +41,10 @@ impl McpClient {
         let request = JsonRpcRequest::new(
             0,
             "initialize",
-            Some(serde_json::to_value(&params).map_err(|e| {
-                McpError::Protocol(format!("serialize initialize params: {e}"))
-            })?),
+            Some(
+                serde_json::to_value(&params)
+                    .map_err(|e| McpError::Protocol(format!("serialize initialize params: {e}")))?,
+            ),
         );
 
         let response = self.transport.send_request(&request).await?;
@@ -52,10 +53,8 @@ impl McpClient {
             return Err(McpError::Server(err.message));
         }
 
-        let result: InitializeResult =
-            serde_json::from_value(response.result.unwrap_or_default()).map_err(|e| {
-                McpError::Protocol(format!("parse initialize result: {e}"))
-            })?;
+        let result: InitializeResult = serde_json::from_value(response.result.unwrap_or_default())
+            .map_err(|e| McpError::Protocol(format!("parse initialize result: {e}")))?;
 
         self.server_info = Some(result.server_info);
         self.capabilities = Some(result.capabilities);
@@ -83,9 +82,10 @@ impl McpClient {
         let request = JsonRpcRequest::new(
             1,
             "tools/list",
-            Some(serde_json::to_value(&params).map_err(|e| {
-                McpError::Protocol(format!("serialize list_tools params: {e}"))
-            })?),
+            Some(
+                serde_json::to_value(&params)
+                    .map_err(|e| McpError::Protocol(format!("serialize list_tools params: {e}")))?,
+            ),
         );
 
         let response = self.transport.send_request(&request).await?;
@@ -95,9 +95,8 @@ impl McpClient {
         }
 
         let result: ListToolsResult =
-            serde_json::from_value(response.result.unwrap_or_default()).map_err(|e| {
-                McpError::Protocol(format!("parse list_tools result: {e}"))
-            })?;
+            serde_json::from_value(response.result.unwrap_or_default())
+                .map_err(|e| McpError::Protocol(format!("parse list_tools result: {e}")))?;
 
         Ok(result.tools)
     }
@@ -121,9 +120,10 @@ impl McpClient {
         let request = JsonRpcRequest::new(
             2,
             "tools/call",
-            Some(serde_json::to_value(&params).map_err(|e| {
-                McpError::Protocol(format!("serialize call_tool params: {e}"))
-            })?),
+            Some(
+                serde_json::to_value(&params)
+                    .map_err(|e| McpError::Protocol(format!("serialize call_tool params: {e}")))?,
+            ),
         );
 
         let response = self.transport.send_request(&request).await?;
@@ -132,10 +132,8 @@ impl McpClient {
             return Err(McpError::Server(err.message));
         }
 
-        let result: CallToolResult =
-            serde_json::from_value(response.result.unwrap_or_default()).map_err(|e| {
-                McpError::Protocol(format!("parse call_tool result: {e}"))
-            })?;
+        let result: CallToolResult = serde_json::from_value(response.result.unwrap_or_default())
+            .map_err(|e| McpError::Protocol(format!("parse call_tool result: {e}")))?;
 
         Ok(result)
     }

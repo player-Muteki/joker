@@ -1,6 +1,6 @@
 use joker_config::ConfigStore;
 
-use crate::app::{App, AgentNewState, Dialog, DialogKind};
+use crate::app::{AgentNewState, App, Dialog, DialogKind};
 
 use super::{CommandAction, CommandInfo, CommandResult, SlashCommand};
 
@@ -101,9 +101,7 @@ impl SlashCommand for AgentCommand {
 
 fn agent_list(app: &App) -> CommandResult {
     if app.agent_names.is_empty() {
-        CommandResult::message(
-            "No agent profiles configured. Use /agent new to create one.",
-        )
+        CommandResult::message("No agent profiles configured. Use /agent new to create one.")
     } else {
         let lines: Vec<String> = app
             .agent_names

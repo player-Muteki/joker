@@ -80,3 +80,19 @@ async fn scripted_driver_completes_with_writeable_tools() {
     handle.await.unwrap();
     assert!(completed);
 }
+
+#[tokio::test]
+async fn scripted_driver_runs_headless_and_returns_assistant_text() {
+    let driver = AgentDriver::new(
+        RuntimeConfig {
+            scripted_response: "headless result".into(),
+            ..RuntimeConfig::default()
+        },
+        std::env::current_dir().unwrap(),
+    );
+
+    let outcome = driver.run_headless("hello".into()).await.unwrap();
+
+    assert_eq!(outcome.assistant_text, "headless result");
+    assert_eq!(outcome.stop_reason, joker::StopReason::Stop);
+}

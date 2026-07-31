@@ -45,21 +45,21 @@ impl FetchUrlTool {
         } else {
             // Domain name — check if it resolves to a private IP
             if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&(host, 0)) {
-                addrs.map(|a| match a {
-                    std::net::SocketAddr::V4(v4) => std::net::IpAddr::V4(*v4.ip()),
-                    std::net::SocketAddr::V6(v6) => std::net::IpAddr::V6(*v6.ip()),
-                })
-                .any(|ip: std::net::IpAddr| {
-                    match ip {
+                addrs
+                    .map(|a| match a {
+                        std::net::SocketAddr::V4(v4) => std::net::IpAddr::V4(*v4.ip()),
+                        std::net::SocketAddr::V6(v6) => std::net::IpAddr::V6(*v6.ip()),
+                    })
+                    .any(|ip: std::net::IpAddr| match ip {
                         std::net::IpAddr::V4(v4) => {
                             v4.is_loopback()
                                 || v4.is_private()
                                 || v4.is_link_local()
-                                || v4.octets()[0] == 100 && (v4.octets()[1] & 0b11000000) == 0b01000000
+                                || v4.octets()[0] == 100
+                                    && (v4.octets()[1] & 0b11000000) == 0b01000000
                         }
                         std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
-                    }
-                })
+                    })
             } else {
                 false // can't resolve, let reqwest try (it will fail)
             }
@@ -128,7 +128,9 @@ impl Tool for FetchUrlTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: ToolName::new("fetch_url"),
-            description: "Fetch a URL and return its text content. HTML pages are reduced to readable text.".into(),
+            description:
+                "Fetch a URL and return its text content. HTML pages are reduced to readable text."
+                    .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -240,7 +242,11 @@ fn truncate_text(text: &str, max_bytes: usize) -> String {
         }
         boundary = i;
     }
-    format!("{}... [truncated {} bytes]", &text[..boundary], text.len() - max_bytes)
+    format!(
+        "{}... [truncated {} bytes]",
+        &text[..boundary],
+        text.len() - max_bytes
+    )
 }
 
 #[cfg(test)]

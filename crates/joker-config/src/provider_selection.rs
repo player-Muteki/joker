@@ -1,6 +1,6 @@
 //! Provider selection — maps provider names to routes or scripted mode.
 
-use joker_provider::{Route, ALIBABA, ANTHROPIC, BAIDU, DEEPSEEK, GOOGLE, MOONSHOT, ZHIPUAI};
+use joker_provider::{ALIBABA, ANTHROPIC, BAIDU, DEEPSEEK, GOOGLE, MOONSHOT, Route, ZHIPUAI};
 use tracing::info;
 
 use crate::error::ConfigError;
@@ -32,7 +32,9 @@ impl ProviderSelection {
         match provider.trim().to_ascii_lowercase().as_str() {
             "" | "scripted" => Ok(Self::scripted()),
             "deepseek" => Ok(Self::Route(DEEPSEEK.into_route(Some("deepseek-chat")))),
-            "anthropic" => Ok(Self::Route(ANTHROPIC.into_route(Some("claude-sonnet-4-20250514")))),
+            "anthropic" => Ok(Self::Route(
+                ANTHROPIC.into_route(Some("claude-sonnet-4-20250514")),
+            )),
             "google" => Ok(Self::Route(GOOGLE.into_route(Some("gemini-2-5-flash")))),
             "alibaba" | "dashscope" => Ok(Self::Route(ALIBABA.into_route(Some("qwen-plus")))),
             "zhipuai" | "glm" => Ok(Self::Route(ZHIPUAI.into_route(Some("glm-4-plus")))),

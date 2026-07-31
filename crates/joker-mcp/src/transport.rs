@@ -33,10 +33,16 @@ pub enum TransportError {
 #[async_trait::async_trait]
 pub trait McpTransport: Send + Sync {
     /// Send a JSON-RPC request and return the matching response.
-    async fn send_request(&mut self, request: &JsonRpcRequest) -> Result<JsonRpcResponse, TransportError>;
+    async fn send_request(
+        &mut self,
+        request: &JsonRpcRequest,
+    ) -> Result<JsonRpcResponse, TransportError>;
 
     /// Send a JSON-RPC notification (fire-and-forget, no response expected).
-    async fn send_notification(&mut self, notification: &serde_json::Value) -> Result<(), TransportError>;
+    async fn send_notification(
+        &mut self,
+        notification: &serde_json::Value,
+    ) -> Result<(), TransportError>;
 
     /// Close the transport and clean up resources.
     async fn close(&mut self) -> Result<(), TransportError>;
@@ -97,7 +103,10 @@ impl StdioTransport {
 
 #[async_trait::async_trait]
 impl McpTransport for StdioTransport {
-    async fn send_request(&mut self, request: &JsonRpcRequest) -> Result<JsonRpcResponse, TransportError> {
+    async fn send_request(
+        &mut self,
+        request: &JsonRpcRequest,
+    ) -> Result<JsonRpcResponse, TransportError> {
         let new_id = self.next_id();
         let stdin = self.stdin.as_mut().ok_or(TransportError::NotConnected)?;
         let mut request = request.clone();
@@ -119,7 +128,10 @@ impl McpTransport for StdioTransport {
         }
     }
 
-    async fn send_notification(&mut self, notification: &serde_json::Value) -> Result<(), TransportError> {
+    async fn send_notification(
+        &mut self,
+        notification: &serde_json::Value,
+    ) -> Result<(), TransportError> {
         let stdin = self.stdin.as_mut().ok_or(TransportError::NotConnected)?;
         let mut body = serde_json::to_vec(notification)?;
         body.push(b'\n');

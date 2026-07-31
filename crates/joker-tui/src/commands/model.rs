@@ -73,8 +73,5 @@ fn available_models_for_dialog(app: &App) -> Vec<(String, String)> {
     } else {
         app.available_models.clone()
     };
-    models
-        .into_iter()
-        .map(|m| (m.clone(), m))
-        .collect()
+    models.into_iter().map(|m| (m.clone(), m)).collect()
 }

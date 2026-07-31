@@ -62,12 +62,9 @@ impl SlashCommand for SessionsCommand {
 fn sessions_list(app: &App) -> CommandResult {
     if let Some(ref store) = app.session_store {
         let store = store.clone();
-        let result = tokio::runtime::Handle::current()
-            .block_on(async move { store.list().await });
+        let result = tokio::runtime::Handle::current().block_on(async move { store.list().await });
         match result {
-            Ok(sessions) if sessions.is_empty() => {
-                CommandResult::message("No saved sessions.")
-            }
+            Ok(sessions) if sessions.is_empty() => CommandResult::message("No saved sessions."),
             Ok(sessions) => {
                 let lines: Vec<String> = sessions
                     .iter()
@@ -97,8 +94,8 @@ fn sessions_load(app: &mut App, id: &str) -> CommandResult {
         let store = store.clone();
         let id_owned = id.to_string();
         let id_clone = id_owned.clone();
-        let result = tokio::runtime::Handle::current()
-            .block_on(async move { store.load(&id_owned).await });
+        let result =
+            tokio::runtime::Handle::current().block_on(async move { store.load(&id_owned).await });
         match result {
             Ok(Some(data)) => {
                 app.transcript.clear();
@@ -117,10 +114,15 @@ fn sessions_load(app: &mut App, id: &str) -> CommandResult {
                             }
                         }
                         joker::Role::Assistant => {
-                            let text = msg.content.iter().filter_map(|c| match c {
-                                joker::Content::Text(t) => Some(t.text.clone()),
-                                _ => None,
-                            }).collect::<Vec<_>>().join("\n");
+                            let text = msg
+                                .content
+                                .iter()
+                                .filter_map(|c| match c {
+                                    joker::Content::Text(t) => Some(t.text.clone()),
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
                             if !text.is_empty() {
                                 app.transcript.push(TranscriptItem::Assistant {
                                     text,
@@ -139,15 +141,21 @@ fn sessions_load(app: &mut App, id: &str) -> CommandResult {
                             }
                         }
                         joker::Role::Tool => {
-                            let text = msg.content.iter().filter_map(|c| match c {
-                                joker::Content::ToolResult(tr) => Some(tr.output.to_string()),
-                                _ => None,
-                            }).collect::<Vec<_>>().join("\n");
+                            let text = msg
+                                .content
+                                .iter()
+                                .filter_map(|c| match c {
+                                    joker::Content::ToolResult(tr) => Some(tr.output.to_string()),
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
                             if !text.is_empty() {
-                                app.transcript.push(TranscriptItem::Status(format!("Tool result: {text}")));
+                                app.transcript
+                                    .push(TranscriptItem::Status(format!("Tool result: {text}")));
                             }
                         }
-                        joker::Role::System => {},
+                        joker::Role::System => {}
                         _ => {}
                     }
                 }

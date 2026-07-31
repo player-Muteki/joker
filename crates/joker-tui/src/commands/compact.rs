@@ -24,8 +24,7 @@ impl SlashCommand for CompactCommand {
     ) -> CommandResult {
         app.compact_requested = true;
         app.transcript.push(TranscriptItem::Status(
-            "Context compaction requested. SummaryContextBuilder will activate on next run."
-                .into(),
+            "Context compaction requested. SummaryContextBuilder will activate on next run.".into(),
         ));
         CommandResult::message(
             "Compact request sent. The next agent run will use summary-based context.",

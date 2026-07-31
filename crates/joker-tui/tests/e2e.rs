@@ -29,9 +29,18 @@ async fn e2e_golden_path_scripted_run() {
 
     // 2. Verify constraint files were generated for built-in agents
     let agents_dir = workspace.join(".joker").join("agents");
-    assert!(agents_dir.join("plan_agent.md").exists(), "plan_agent.md should exist");
-    assert!(agents_dir.join("build_agent.md").exists(), "build_agent.md should exist");
-    assert!(agents_dir.join("yolo_agent.md").exists(), "yolo_agent.md should exist");
+    assert!(
+        agents_dir.join("plan_agent.md").exists(),
+        "plan_agent.md should exist"
+    );
+    assert!(
+        agents_dir.join("build_agent.md").exists(),
+        "build_agent.md should exist"
+    );
+    assert!(
+        agents_dir.join("yolo_agent.md").exists(),
+        "yolo_agent.md should exist"
+    );
 
     // 3. Verify the workspace is tracked correctly
     assert_eq!(driver.workspace(), &workspace);
@@ -56,7 +65,10 @@ async fn e2e_golden_path_scripted_run() {
                 saw_delta |= delta.contains("Joker");
             }
             UiEvent::RunCompleted(result) => {
-                assert!(result.is_ok(), "run should complete successfully: {result:?}");
+                assert!(
+                    result.is_ok(),
+                    "run should complete successfully: {result:?}"
+                );
                 completed = true;
                 break;
             }
@@ -65,7 +77,10 @@ async fn e2e_golden_path_scripted_run() {
     }
 
     handle.await.unwrap();
-    assert!(saw_delta, "should receive text delta from scripted response");
+    assert!(
+        saw_delta,
+        "should receive text delta from scripted response"
+    );
     assert!(completed, "should receive RunCompleted event");
 }
 
@@ -75,10 +90,7 @@ async fn e2e_agent_switching() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let workspace = temp_dir.path().to_path_buf();
 
-    let mut driver = AgentDriver::new(
-        RuntimeConfig::default(),
-        workspace,
-    );
+    let mut driver = AgentDriver::new(RuntimeConfig::default(), workspace);
 
     // Default active agent is "build"
     assert_eq!(driver.active_agent(), "build");
@@ -102,27 +114,32 @@ async fn e2e_permission_engine_has_builtin_profiles() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let workspace = temp_dir.path().to_path_buf();
 
-    let driver = AgentDriver::new(
-        RuntimeConfig::default(),
-        workspace,
-    );
+    let driver = AgentDriver::new(RuntimeConfig::default(), workspace);
 
     let engine = driver.permission_engine();
 
     // Plan agent should deny mutating tools
     let decision = engine.evaluate("plan", &joker::ToolName::new("write_file"), true, None);
-    assert!(matches!(decision, joker::PermissionDecision::Deny { .. }),
-        "plan agent should hard-deny write_file: got {decision:?}");
+    assert!(
+        matches!(decision, joker::PermissionDecision::Deny { .. }),
+        "plan agent should hard-deny write_file: got {decision:?}"
+    );
 
     // Plan agent should allow read-only tools
     let decision = engine.evaluate("plan", &joker::ToolName::new("read_file"), false, None);
-    assert_eq!(decision, joker::PermissionDecision::Allow,
-        "plan agent should allow read_file");
+    assert_eq!(
+        decision,
+        joker::PermissionDecision::Allow,
+        "plan agent should allow read_file"
+    );
 
     // Yolo agent should auto-accept write_file
     let decision = engine.evaluate("yolo", &joker::ToolName::new("write_file"), true, None);
-    assert_eq!(decision, joker::PermissionDecision::Allow,
-        "yolo agent should auto-accept write_file");
+    assert_eq!(
+        decision,
+        joker::PermissionDecision::Allow,
+        "yolo agent should auto-accept write_file"
+    );
 }
 
 /// Verify that compact mode can be toggled on the driver.
@@ -131,10 +148,7 @@ async fn e2e_compact_toggle() {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let workspace = temp_dir.path().to_path_buf();
 
-    let mut driver = AgentDriver::new(
-        RuntimeConfig::default(),
-        workspace,
-    );
+    let mut driver = AgentDriver::new(RuntimeConfig::default(), workspace);
 
     // Default: compact not pending
     driver.set_compact_pending(true);
@@ -167,10 +181,20 @@ async fn e2e_concurrent_runs() {
     let (tx2, mut rx2) = mpsc::unbounded_channel();
 
     let h1 = driver1
-        .spawn_run("prompt A".into(), CancellationToken::new(), tx1, SharedApprovalChannel::new())
+        .spawn_run(
+            "prompt A".into(),
+            CancellationToken::new(),
+            tx1,
+            SharedApprovalChannel::new(),
+        )
         .unwrap();
     let h2 = driver2
-        .spawn_run("prompt B".into(), CancellationToken::new(), tx2, SharedApprovalChannel::new())
+        .spawn_run(
+            "prompt B".into(),
+            CancellationToken::new(),
+            tx2,
+            SharedApprovalChannel::new(),
+        )
         .unwrap();
 
     let mut done = 0u8;
@@ -227,5 +251,8 @@ async fn e2e_scripted_model_stop_reason() {
     }
 
     handle.await.unwrap();
-    assert!(finished, "should receive ModelFinished with StopReason::Stop");
+    assert!(
+        finished,
+        "should receive ModelFinished with StopReason::Stop"
+    );
 }

@@ -13,7 +13,6 @@ use std::{
 
 use futures_core::Stream;
 use futures_util::StreamExt;
-use tracing::{error, info, trace, warn};
 use joker::{
     Content, Message, Model, ModelError, ModelFuture, ModelRequest, ModelResponseEvent,
     ModelStream, Role, StopReason, ToolCall, ToolDefinition, ToolResult, Usage,
@@ -23,6 +22,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::sync::mpsc;
+use tracing::{error, info, trace, warn};
 
 /// Configuration for an OpenAI-compatible provider.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -422,11 +422,12 @@ pub fn chat_request_body(model: &str, request: &ModelRequest, extra_body: Option
 
     if let Some(extra) = extra_body
         && let Value::Object(extra_map) = extra
-            && let Value::Object(ref mut body_map) = body {
-                for (k, v) in extra_map {
-                    body_map.insert(k.clone(), v.clone());
-                }
-            }
+        && let Value::Object(ref mut body_map) = body
+    {
+        for (k, v) in extra_map {
+            body_map.insert(k.clone(), v.clone());
+        }
+    }
 
     body
 }

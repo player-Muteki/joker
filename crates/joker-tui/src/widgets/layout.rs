@@ -77,7 +77,10 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
             height: 5.min(area.height),
         };
         let title = format!("Enter API key for {provider_id}:");
-        let masked: String = input_buffer.chars().map(|c| if c.is_ascii_whitespace() { c } else { '*' }).collect();
+        let masked: String = input_buffer
+            .chars()
+            .map(|c| if c.is_ascii_whitespace() { c } else { '*' })
+            .collect();
         let block = ratatui::widgets::Block::default()
             .title(title)
             .borders(ratatui::widgets::Borders::ALL)

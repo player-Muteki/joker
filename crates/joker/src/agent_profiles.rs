@@ -19,7 +19,11 @@ use crate::tool::ToolName;
 /// Create the three built-in agent profiles.
 #[must_use]
 pub fn builtin_agent_profiles(agents_dir: &std::path::Path) -> Vec<AgentPermission> {
-    vec![plan_profile(agents_dir), build_profile(agents_dir), yolo_profile(agents_dir)]
+    vec![
+        plan_profile(agents_dir),
+        build_profile(agents_dir),
+        yolo_profile(agents_dir),
+    ]
 }
 
 fn plan_profile(agents_dir: &std::path::Path) -> AgentPermission {
@@ -48,13 +52,11 @@ fn plan_profile(agents_dir: &std::path::Path) -> AgentPermission {
         constraint_file: agents_dir.join("plan_agent.md"),
         hard_permission: Some(PermissionSetting::Disabled), // blocks all mutating tools
         // Path-level hard rules (MiMo-Code style): plan files are the only exception
-        hard_permission_rules: vec![
-            HardPermissionRule {
-                tool_pattern: "*".into(),
-                resource_pattern: "plans/*.md".into(),
-                setting: PermissionSetting::AutoAccept,
-            },
-        ],
+        hard_permission_rules: vec![HardPermissionRule {
+            tool_pattern: "*".into(),
+            resource_pattern: "plans/*.md".into(),
+            setting: PermissionSetting::AutoAccept,
+        }],
         model: None,
     }
 }

@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use joker::{
-    Agent, Event, RecordingObserver, RunRequest, ScriptedModel, ScriptedStep, Tool,
-    ToolAnnotations, ToolDefinition, ToolFn, ToolFuture, ToolInvocation, ToolName, ToolOutput,
-    ToolRegistry,
+    Agent, Event, RecordingObserver, RunRequest, ScriptedModel, ScriptedStep, ToolAnnotations,
+    ToolDefinition, ToolFn, ToolFuture, ToolInvocation, ToolName, ToolOutput, ToolRegistry,
 };
 use serde_json::json;
 
@@ -44,7 +43,9 @@ async fn main() {
         match event {
             Event::RunStarted => println!("  - RunStarted"),
             Event::TextDelta { delta } => println!("  - TextDelta: {delta:?}"),
-            Event::ToolDispatch { call_id, tool_name, .. } => {
+            Event::ToolDispatch {
+                call_id, tool_name, ..
+            } => {
                 println!("  - ToolDispatch: {tool_name} ({call_id})");
             }
             Event::ToolStarted { name, .. } => println!("  - ToolStarted: {name}"),

@@ -1,7 +1,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use joker::{
-    ContextBuilder, ContextInput, ContextLimits, Conversation, FixedWindowContextBuilder,
-    Message, estimate_tokens, micro_dedup_messages,
+    ContextBuilder, ContextInput, ContextLimits, Conversation, FixedWindowContextBuilder, Message,
+    estimate_tokens, micro_dedup_messages,
 };
 use tokio::runtime::Runtime;
 

@@ -300,8 +300,7 @@ mod tests {
         }"#;
         let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
         assert!(resp.error.is_none());
-        let result: InitializeResult =
-            serde_json::from_value(resp.result.unwrap()).unwrap();
+        let result: InitializeResult = serde_json::from_value(resp.result.unwrap()).unwrap();
         assert_eq!(result.server_info.name, "test-server");
         assert!(result.capabilities.tools.is_some());
     }
@@ -327,8 +326,7 @@ mod tests {
             }
         }"#;
         let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
-        let result: ListToolsResult =
-            serde_json::from_value(resp.result.unwrap()).unwrap();
+        let result: ListToolsResult = serde_json::from_value(resp.result.unwrap()).unwrap();
         assert_eq!(result.tools.len(), 1);
         assert_eq!(result.tools[0].name, "echo");
     }

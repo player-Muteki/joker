@@ -39,7 +39,9 @@ fn item_lines(item: &TranscriptItem) -> Vec<Line<'static>> {
         } => {
             let (marker, color, detail) = match state {
                 ToolState::Running => ("running", Color::Yellow, String::new()),
-                ToolState::Progress(partial) => ("progress", Color::Yellow, summarize_value(partial)),
+                ToolState::Progress(partial) => {
+                    ("progress", Color::Yellow, summarize_value(partial))
+                }
                 ToolState::Done(output) => ("ok", Color::Green, summarize_value(output)),
                 ToolState::Error(output) => ("error", Color::Red, summarize_value(output)),
             };

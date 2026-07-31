@@ -27,7 +27,12 @@ async fn text_only_turn_emits_text_delta_and_finished() {
         .collect();
     assert_eq!(text_deltas, vec!["hello"]);
 
-    assert!(events.iter().any(|e| matches!(e, Event::ModelFinished { stop_reason: StopReason::Stop })));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::ModelFinished {
+            stop_reason: StopReason::Stop
+        }
+    )));
 }
 
 #[tokio::test]
@@ -80,9 +85,9 @@ async fn tool_call_turn_emits_tool_events_and_finished() {
         .count();
     assert_eq!(tool_finishes, 1);
 
-    assert!(events
-        .iter()
-        .any(|e| matches!(e, Event::ModelFinished { stop_reason } if *stop_reason == StopReason::ToolUse)));
+    assert!(events.iter().any(
+        |e| matches!(e, Event::ModelFinished { stop_reason } if *stop_reason == StopReason::ToolUse)
+    ));
 
     let second_finish = events
         .iter()
@@ -94,9 +99,9 @@ async fn tool_call_turn_emits_tool_events_and_finished() {
 #[tokio::test]
 async fn model_error_produces_run_error() {
     let observer = RecordingObserver::new();
-    let model =
-        Arc::new(ScriptedModel::new([ScriptedStep::Error("something went wrong".into())]))
-            as Arc<dyn joker::Model>;
+    let model = Arc::new(ScriptedModel::new([ScriptedStep::Error(
+        "something went wrong".into(),
+    )])) as Arc<dyn joker::Model>;
     let agent = Agent::new(model)
         .with_observer(Arc::new(observer.clone()))
         .with_config(AgentConfig {
@@ -112,10 +117,7 @@ async fn model_error_produces_run_error() {
 
     let events = observer.events();
     assert!(matches!(events.first(), Some(Event::RunStarted)));
-    assert!(matches!(
-        events.last(),
-        Some(Event::RunFinished { .. })
-    ));
+    assert!(matches!(events.last(), Some(Event::RunFinished { .. })));
 }
 
 #[tokio::test]
@@ -161,9 +163,7 @@ async fn message_with_tool_use_triggers_tool_dispatch_events() {
         .iter()
         .filter_map(|e| match e {
             Event::ToolDispatch {
-                call_id,
-                tool_name,
-                ..
+                call_id, tool_name, ..
             } => Some((call_id.as_str(), tool_name.as_str())),
             _ => None,
         })

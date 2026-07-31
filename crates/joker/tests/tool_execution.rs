@@ -176,7 +176,6 @@ async fn invalid_arguments_and_tool_failures_become_error_results() {
     );
 }
 
-
 // ── PermissionPolicy + ApprovalChannel integration ────────────────────
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -252,20 +251,17 @@ async fn permission_ask_pauses_for_approval_before_mutating_tool() {
                 },
             },
             |_invocation: joker::ToolInvocation| -> joker::ToolFuture<'static> {
-                Box::pin(async move {
-                    Ok(joker::ToolOutput::new(serde_json::json!({"ok": true})))
-                })
+                Box::pin(async move { Ok(joker::ToolOutput::new(serde_json::json!({"ok": true}))) })
             },
         ))
         .unwrap();
 
-    let policy = Arc::new(
-        joker::PermissionPolicy::new()
-            .with_default_for_mutating(joker::ToolDecision::Ask {
-                request_id: "write_file-0".into(),
-                reason: "mutating tool needs approval".into(),
-            }),
-    );
+    let policy = Arc::new(joker::PermissionPolicy::new().with_default_for_mutating(
+        joker::ToolDecision::Ask {
+            request_id: "write_file-0".into(),
+            reason: "mutating tool needs approval".into(),
+        },
+    ));
 
     let approval_channel = joker::SharedApprovalChannel::new();
     let channel_for_agent = approval_channel.clone();
@@ -276,15 +272,17 @@ async fn permission_ask_pauses_for_approval_before_mutating_tool() {
         .approval_channel(channel_for_agent)
         .build();
 
-    let run_handle = tokio::spawn(async move {
-        agent.run(joker::RunRequest::new("write a file")).await
-    });
+    let run_handle =
+        tokio::spawn(async move { agent.run(joker::RunRequest::new("write a file")).await });
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Verify a pending approval request was submitted
     let pending = approval_channel.pending_request();
-    assert!(pending.is_some(), "agent should have submitted an approval request");
+    assert!(
+        pending.is_some(),
+        "agent should have submitted an approval request"
+    );
     let req = pending.unwrap();
     assert_eq!(req.request_id, "ask-write_file");
     assert_eq!(req.tool_name, "write_file");
@@ -294,15 +292,16 @@ async fn permission_ask_pauses_for_approval_before_mutating_tool() {
         remember_for_session: false,
     });
 
-    let outcome = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        run_handle,
-    )
-    .await
-    .expect("run should complete within timeout")
-    .expect("run should not panic");
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), run_handle)
+        .await
+        .expect("run should complete within timeout")
+        .expect("run should not panic");
 
-    assert!(outcome.is_ok(), "run should succeed after approval: {:?}", outcome);
+    assert!(
+        outcome.is_ok(),
+        "run should succeed after approval: {:?}",
+        outcome
+    );
     let outcome = outcome.unwrap();
     assert_eq!(outcome.stop_reason, joker::StopReason::Stop);
 }
@@ -326,20 +325,19 @@ async fn permission_ask_is_deniable() {
                 },
             },
             |_invocation: joker::ToolInvocation| -> joker::ToolFuture<'static> {
-                Box::pin(async move {
-                    Ok(joker::ToolOutput::new(serde_json::json!({"done": true})))
-                })
+                Box::pin(
+                    async move { Ok(joker::ToolOutput::new(serde_json::json!({"done": true}))) },
+                )
             },
         ))
         .unwrap();
 
-    let policy = Arc::new(
-        joker::PermissionPolicy::new()
-            .with_default_for_mutating(joker::ToolDecision::Ask {
-                request_id: "shell-ask".into(),
-                reason: "needs approval".into(),
-            }),
-    );
+    let policy = Arc::new(joker::PermissionPolicy::new().with_default_for_mutating(
+        joker::ToolDecision::Ask {
+            request_id: "shell-ask".into(),
+            reason: "needs approval".into(),
+        },
+    ));
 
     let approval_channel = joker::SharedApprovalChannel::new();
     let chan = approval_channel.clone();
@@ -350,27 +348,26 @@ async fn permission_ask_is_deniable() {
         .approval_channel(chan)
         .build();
 
-    let run_handle = tokio::spawn(async move {
-        agent.run(joker::RunRequest::new("run a command")).await
-    });
+    let run_handle =
+        tokio::spawn(async move { agent.run(joker::RunRequest::new("run a command")).await });
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let pending = approval_channel.pending_request();
-    assert!(pending.is_some(), "agent should have submitted an approval request");
+    assert!(
+        pending.is_some(),
+        "agent should have submitted an approval request"
+    );
 
     // Deny the request
     approval_channel.respond(joker::ApprovalResponse::Denied {
         reason: "not now".into(),
     });
 
-    let outcome = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        run_handle,
-    )
-    .await
-    .expect("run should complete")
-    .expect("run should not panic");
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), run_handle)
+        .await
+        .expect("run should complete")
+        .expect("run should not panic");
 
     assert!(outcome.is_ok(), "run should succeed even after denial");
     let conversation = outcome.unwrap().conversation;
@@ -384,5 +381,8 @@ async fn permission_ask_is_deniable() {
             }
         })
     });
-    assert!(has_denied_tool, "denied tool should produce an error result");
+    assert!(
+        has_denied_tool,
+        "denied tool should produce an error result"
+    );
 }

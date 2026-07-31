@@ -192,7 +192,10 @@ impl ToolCapability {
     /// Returns `true` if the capability implies the tool can be sandboxed.
     #[must_use]
     pub fn is_sandboxable(self) -> bool {
-        matches!(self, ToolCapability::Sandboxable | ToolCapability::ExecutesCode)
+        matches!(
+            self,
+            ToolCapability::Sandboxable | ToolCapability::ExecutesCode
+        )
     }
 }
 

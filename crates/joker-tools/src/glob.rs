@@ -47,9 +47,10 @@ pub async fn glob_files(
         if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
             continue;
         }
-        let relative = entry.path().strip_prefix(&root).map_err(|error| {
-            ToolError::Execution(format!("path strip: {error}"))
-        })?;
+        let relative = entry
+            .path()
+            .strip_prefix(&root)
+            .map_err(|error| ToolError::Execution(format!("path strip: {error}")))?;
 
         if glob.matches_path(relative) {
             results.push(relative.to_path_buf());
@@ -78,7 +79,8 @@ impl Tool for GlobTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: ToolName::new("glob"),
-            description: "Find files matching a glob pattern (e.g. \"**/*.rs\"). Respects .gitignore.".into(),
+            description:
+                "Find files matching a glob pattern (e.g. \"**/*.rs\"). Respects .gitignore.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -124,8 +126,12 @@ impl Tool for GlobTool {
                 .map(|p| self.workspace.resolve_read(p))
                 .unwrap_or_else(|| Ok(self.workspace.root.clone()))?;
 
-            let results = glob_files(&root, &args.pattern, args.max_depth, args.max_results).await?;
-            let paths: Vec<String> = results.iter().map(|p| p.to_string_lossy().to_string()).collect();
+            let results =
+                glob_files(&root, &args.pattern, args.max_depth, args.max_results).await?;
+            let paths: Vec<String> = results
+                .iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
 
             Ok(ToolOutput::new(json!({
                 "pattern": args.pattern,

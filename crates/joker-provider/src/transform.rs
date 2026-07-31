@@ -13,7 +13,13 @@ use joker::{Content, Message, Role, ToolCall, ToolResult};
 pub fn scrub_tool_call_ids<S: AsRef<str>>(messages: &[Message], provider: S) -> Vec<Message> {
     let provider = provider.as_ref();
     let scrub_char = match provider {
-        "anthropic" | "bedrock" => |c: char| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' },
+        "anthropic" | "bedrock" => |c: char| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        },
         "mistral" => |c: char| if c.is_alphanumeric() { c } else { '0' },
         _ => return messages.to_vec(),
     };
@@ -52,7 +58,10 @@ pub fn scrub_tool_call_ids<S: AsRef<str>>(messages: &[Message], provider: S) -> 
                         } else {
                             call_id
                         };
-                        Content::ToolResult(ToolResult { call_id, ..tr.clone() })
+                        Content::ToolResult(ToolResult {
+                            call_id,
+                            ..tr.clone()
+                        })
                     }
                     other => other,
                 })
@@ -66,10 +75,7 @@ pub fn scrub_tool_call_ids<S: AsRef<str>>(messages: &[Message], provider: S) -> 
 ///
 /// DeepSeek-style models require every assistant message to include a
 /// `reasoning` block; this adds an empty one if missing.
-pub fn ensure_reasoning_for_model<S: AsRef<str>>(
-    messages: &[Message],
-    model: S,
-) -> Vec<Message> {
+pub fn ensure_reasoning_for_model<S: AsRef<str>>(messages: &[Message], model: S) -> Vec<Message> {
     let model = model.as_ref().to_lowercase();
     let needs_reasoning =
         model.contains("deepseek") || model.contains("qwq") || model.contains("r1");
@@ -84,13 +90,21 @@ pub fn ensure_reasoning_for_model<S: AsRef<str>>(
             if msg.role != Role::Assistant {
                 return msg.clone();
             }
-            let has_reasoning = msg.content.iter().any(|c| matches!(c, Content::Reasoning(_)));
+            let has_reasoning = msg
+                .content
+                .iter()
+                .any(|c| matches!(c, Content::Reasoning(_)));
             if has_reasoning {
                 return msg.clone();
             }
             let mut content = msg.content.clone();
-            content.push(Content::Reasoning(joker::ReasoningContent { text: String::new() }));
-            Message { content, ..msg.clone() }
+            content.push(Content::Reasoning(joker::ReasoningContent {
+                text: String::new(),
+            }));
+            Message {
+                content,
+                ..msg.clone()
+            }
         })
         .collect()
 }
@@ -115,7 +129,10 @@ pub fn merge_text_parts(messages: &[Message]) -> Vec<Message> {
             if !buf.is_empty() {
                 merged.push(Content::text(buf));
             }
-            Message { content: merged, ..msg.clone() }
+            Message {
+                content: merged,
+                ..msg.clone()
+            }
         })
         .collect()
 }

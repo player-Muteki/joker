@@ -15,7 +15,6 @@ use std::{
 
 use futures_core::Stream;
 use futures_util::StreamExt;
-use tracing::{error, info, trace, warn};
 use joker::{
     Content, Message, Model, ModelError, ModelFuture, ModelRequest, ModelResponseEvent,
     ModelStream, Role, StopReason, ToolCall, ToolDefinition, Usage,
@@ -25,6 +24,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::mpsc;
+use tracing::{error, info, trace, warn};
 
 use crate::transform;
 
@@ -53,11 +53,7 @@ pub struct AnthropicConfig {
 
 impl AnthropicConfig {
     fn messages_url(&self) -> String {
-        format!(
-            "{}{}",
-            self.base_url.trim_end_matches('/'),
-            MESSAGES_PATH
-        )
+        format!("{}{}", self.base_url.trim_end_matches('/'), MESSAGES_PATH)
     }
 }
 
@@ -95,14 +91,11 @@ impl AnthropicModel {
         }
 
         let mut headers = HeaderMap::new();
-    let mut auth_header = HeaderValue::from_str(&config.api_key)
+        let mut auth_header = HeaderValue::from_str(&config.api_key)
             .map_err(|_| AnthropicProviderError::InvalidAuthHeader)?;
         auth_header.set_sensitive(true);
         headers.insert("x-api-key", auth_header);
-        headers.insert(
-            CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(
             "anthropic-version",
             HeaderValue::from_static(ANTHROPIC_VERSION),
@@ -401,11 +394,7 @@ impl AnthropicSseParser {
         events
     }
 
-    fn parse_event(
-        &mut self,
-        event_type: &str,
-        data: &str,
-    ) -> Result<Option<ParsedEvent>, String> {
+    fn parse_event(&mut self, event_type: &str, data: &str) -> Result<Option<ParsedEvent>, String> {
         // Try parsing as the Anthropic event envelope
         let event: AnthropicStreamEvent =
             serde_json::from_str(data).map_err(|e| format!("invalid SSE JSON: {e}: {data}"))?;
@@ -413,11 +402,7 @@ impl AnthropicSseParser {
         match event_type {
             "message_start" | "message_start " => {
                 // Extract usage from message
-                if let Some(usage) = event
-                    .message
-                    .as_ref()
-                    .and_then(|m| m.usage.as_ref())
-                {
+                if let Some(usage) = event.message.as_ref().and_then(|m| m.usage.as_ref()) {
                     let total_input = usage.input_tokens.unwrap_or(0)
                         + usage.cache_creation_input_tokens.unwrap_or(0)
                         + usage.cache_read_input_tokens.unwrap_or(0);
@@ -447,7 +432,8 @@ impl AnthropicSseParser {
                             let idx = event.index.unwrap_or(0);
                             let id = block.id.clone().unwrap_or_default();
                             let name = block.name.clone().unwrap_or_default();
-                            let partial = block.input.as_ref().and_then(|v| v.as_str()).unwrap_or("");
+                            let partial =
+                                block.input.as_ref().and_then(|v| v.as_str()).unwrap_or("");
                             self.tool_calls.insert(
                                 idx,
                                 PartialToolCall {
@@ -497,17 +483,19 @@ impl AnthropicSseParser {
                 // Check if we have a completed tool call at this index
                 if let Some(idx) = event.index
                     && let Some(tc) = self.tool_calls.remove(&idx)
-                        && !tc.id.is_empty() && !tc.name.is_empty() {
-                            let arguments: Value =
-                                serde_json::from_str(&tc.arguments).unwrap_or(Value::String(tc.arguments.clone()));
-                            return Ok(Some(ParsedEvent::Event(
-                                ModelResponseEvent::ToolCall(ToolCall {
-                                    id: tc.id,
-                                    name: tc.name,
-                                    arguments,
-                                }),
-                            )));
-                        }
+                    && !tc.id.is_empty()
+                    && !tc.name.is_empty()
+                {
+                    let arguments: Value = serde_json::from_str(&tc.arguments)
+                        .unwrap_or(Value::String(tc.arguments.clone()));
+                    return Ok(Some(ParsedEvent::Event(ModelResponseEvent::ToolCall(
+                        ToolCall {
+                            id: tc.id,
+                            name: tc.name,
+                            arguments,
+                        },
+                    ))));
+                }
                 Ok(None)
             }
             "message_delta" | "message_delta " => {
@@ -559,13 +547,14 @@ impl AnthropicSseParser {
                     }));
                 }
                 if let Some(delta) = &event.delta
-                    && let Some(sr) = &delta.stop_reason {
-                        let stop_reason = map_finish_reason(sr);
-                        return Ok(Some(ParsedEvent::Finish {
-                            stop_reason,
-                            usage: self.take_usage(),
-                        }));
-                    }
+                    && let Some(sr) = &delta.stop_reason
+                {
+                    let stop_reason = map_finish_reason(sr);
+                    return Ok(Some(ParsedEvent::Finish {
+                        stop_reason,
+                        usage: self.take_usage(),
+                    }));
+                }
                 if let Some(content) = &event.content_block {
                     if let Some(text) = &content.text {
                         self.pending_text.push_str(text);
@@ -581,20 +570,12 @@ impl AnthropicSseParser {
 
     fn take_text(&mut self) -> Option<String> {
         let text = std::mem::take(&mut self.pending_text);
-        if text.is_empty() {
-            None
-        } else {
-            Some(text)
-        }
+        if text.is_empty() { None } else { Some(text) }
     }
 
     fn take_reasoning(&mut self) -> Option<String> {
         let text = std::mem::take(&mut self.pending_reasoning);
-        if text.is_empty() {
-            None
-        } else {
-            Some(text)
-        }
+        if text.is_empty() { None } else { Some(text) }
     }
 
     fn set_usage(&mut self, _usage: Option<Usage>) {
@@ -609,15 +590,17 @@ impl AnthropicSseParser {
         let mut events = Vec::new();
 
         if let Some(text) = self.take_text()
-            && !text.is_empty() {
-                events.push(ParsedEvent::Event(ModelResponseEvent::TextDelta(text)));
-            }
+            && !text.is_empty()
+        {
+            events.push(ParsedEvent::Event(ModelResponseEvent::TextDelta(text)));
+        }
         if let Some(reasoning) = self.take_reasoning()
-            && !reasoning.is_empty() {
-                events.push(ParsedEvent::Event(ModelResponseEvent::ReasoningDelta(
-                    reasoning,
-                )));
-            }
+            && !reasoning.is_empty()
+        {
+            events.push(ParsedEvent::Event(ModelResponseEvent::ReasoningDelta(
+                reasoning,
+            )));
+        }
 
         events
     }
@@ -737,9 +720,10 @@ async fn parse_sse_stream(
                 ParsedEvent::Finish { stop_reason, usage } => {
                     for ev in parser.finish() {
                         if let ParsedEvent::Event(ev) = ev
-                            && tx.send(Ok(ev)).is_err() {
-                                return;
-                            }
+                            && tx.send(Ok(ev)).is_err()
+                        {
+                            return;
+                        }
                         _ = ev;
                     }
                     if tx
@@ -760,9 +744,10 @@ async fn parse_sse_stream(
 
     for ev in parser.finish() {
         if let ParsedEvent::Event(ev) = ev
-            && tx.send(Ok(ev)).is_err() {
-                return;
-            }
+            && tx.send(Ok(ev)).is_err()
+        {
+            return;
+        }
         _ = ev;
     }
 }
@@ -817,7 +802,9 @@ mod tests {
 
         // Finish flushes the text
         let events = parser.finish();
-        assert!(events.iter().any(|e| matches!(e, ParsedEvent::Event(ModelResponseEvent::TextDelta(t)) if t == "Hello")));
+        assert!(events.iter().any(
+            |e| matches!(e, ParsedEvent::Event(ModelResponseEvent::TextDelta(t)) if t == "Hello")
+        ));
     }
 
     #[test]

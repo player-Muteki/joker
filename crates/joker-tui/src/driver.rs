@@ -10,11 +10,12 @@ use std::{path::PathBuf, sync::Arc};
 use tracing::*;
 
 use joker::{
-    Agent, AgentPermission, ModelResponseEvent, Observer, ObserverFuture, PermissionEngine,
-    PermissionPolicy, PermissionRule, PermissionSetting, RunRequest, ScriptedModel, ScriptedStep,
-    SharedApprovalChannel, StopReason, ToolAnnotations, ToolDefinition, ToolDecision, ToolFn,
+    Agent, AgentPermission, ModelResponseEvent, NoopObserver, Observer, ObserverFuture,
+    PermissionEngine, PermissionPolicy, PermissionRule, PermissionSetting, PolicyFuture,
+    PrefixedContextBuilder, RulePattern, RunRequest, ScriptedModel, ScriptedStep,
+    SharedApprovalChannel, StopReason, ToolAnnotations, ToolDecision, ToolDefinition, ToolFn,
     ToolFuture, ToolInvocation, ToolName, ToolOutput, ToolPolicy, ToolPolicyRequest,
-    builtin_agent_profiles, PolicyFuture, RulePattern, PrefixedContextBuilder, assemble_system_prompt,
+    assemble_system_prompt, builtin_agent_profiles,
 };
 use joker_config::{ProviderSelection, RuntimeConfig};
 use joker_mcp::connect_and_discover;
@@ -60,6 +61,15 @@ pub struct AgentDriver {
     permission_engine: PermissionEngine,
     active_agent: String,
     mcp_tools: Arc<std::sync::Mutex<Vec<Arc<dyn joker::Tool>>>>,
+}
+
+/// Result returned by a non-interactive agent execution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeadlessRunOutcome {
+    /// Plain assistant text collected from the final conversation.
+    pub assistant_text: String,
+    /// Final stop reason reported by the agent runtime.
+    pub stop_reason: StopReason,
 }
 
 impl std::fmt::Debug for AgentDriver {
@@ -181,15 +191,13 @@ impl AgentDriver {
         approval_channel: SharedApprovalChannel,
     ) -> Result<JoinHandle<()>, TuiError> {
         debug!(target: "tui.driver", "spawning agent run");
-        let agent = self.build_agent(tx.clone(), approval_channel.clone())?;
+        let observer = Arc::new(ChannelObserver::new(tx.clone()));
+        let agent = self.build_agent(observer, Some(approval_channel.clone()))?;
         Ok(tokio::spawn(async move {
             let request = RunRequest::new(prompt)
                 .with_cancellation_token(cancellation_token)
                 .with_approval_channel(approval_channel);
-            let result = agent
-                .run(request)
-                .await
-                .map_err(|error| error.to_string());
+            let result = agent.run(request).await.map_err(|error| error.to_string());
             let _ = tx.send(UiEvent::RunCompleted(result));
         }))
     }
@@ -203,15 +211,13 @@ impl AgentDriver {
         approval_channel: SharedApprovalChannel,
     ) -> Result<JoinHandle<()>, TuiError> {
         debug!(target: "tui.driver", message_count = conversation.messages().len(), "spawning agent run with conversation");
-        let agent = self.build_agent(tx.clone(), approval_channel.clone())?;
+        let observer = Arc::new(ChannelObserver::new(tx.clone()));
+        let agent = self.build_agent(observer, Some(approval_channel.clone()))?;
         Ok(tokio::spawn(async move {
             let request = RunRequest::with_conversation(conversation)
                 .with_cancellation_token(cancellation_token)
                 .with_approval_channel(approval_channel);
-            let result = agent
-                .run(request)
-                .await
-                .map_err(|error| error.to_string());
+            let result = agent.run(request).await.map_err(|error| error.to_string());
             let _ = tx.send(UiEvent::RunCompleted(result));
         }))
     }
@@ -253,16 +259,35 @@ impl AgentDriver {
             *guard = tools;
         }
     }
+
+    /// Run one prompt without a TUI and return the assistant's final text.
+    ///
+    /// Non-interactive runs intentionally do not install an approval channel:
+    /// tool requests that need approval are denied by policy instead of waiting
+    /// for a user response that can never arrive.
+    pub async fn run_headless(&self, prompt: String) -> Result<HeadlessRunOutcome, TuiError> {
+        debug!(target: "tui.driver", "starting headless agent run");
+        let agent = self.build_agent(Arc::new(NoopObserver), None)?;
+        let outcome = agent
+            .run(RunRequest::new(prompt))
+            .await
+            .map_err(|error| TuiError::Agent(error.to_string()))?;
+        Ok(HeadlessRunOutcome {
+            assistant_text: collect_assistant_text(&outcome.conversation),
+            stop_reason: outcome.stop_reason,
+        })
+    }
+
     fn build_agent(
         &self,
-        tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
-        approval_channel: SharedApprovalChannel,
+        observer: Arc<dyn Observer>,
+        approval_channel: Option<SharedApprovalChannel>,
     ) -> Result<Agent, TuiError> {
         let model = self.build_model()?;
-        let observer = Arc::new(ChannelObserver::new(tx.clone()));
-        let mut agent = Agent::new(model)
-            .with_observer(observer.clone())
-            .with_approval_channel(approval_channel.clone());
+        let mut agent = Agent::new(model).with_observer(observer.clone());
+        if let Some(channel) = &approval_channel {
+            agent = agent.with_approval_channel(channel.clone());
+        }
 
         // Use permission engine to filter tools for the active agent
         let mut registry = all_tool_registry(&self.workspace)
@@ -281,25 +306,26 @@ impl AgentDriver {
         agent = agent.with_tools(Arc::new(filtered));
 
         // Compose: safety policy (dangerous commands) → engine policy (agent permissions)
-        let safety_policy = PermissionPolicy::new()
-            .with_rules(vec![
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("rm -rf".into()),
-                    ToolDecision::Deny {
-                        reason: "dangerous command".into(),
-                    },
-                ),
-                PermissionRule::new(
-                    RulePattern::CommandPrefix("sudo".into()),
-                    ToolDecision::Deny {
-                        reason: "sudo not allowed".into(),
-                    },
-                ),
-            ]);
-        let engine_policy = self.permission_engine.policy_for_with_channel(
-            self.active_agent.clone(),
-            approval_channel,
-        );
+        let safety_policy = PermissionPolicy::new().with_rules(vec![
+            PermissionRule::new(
+                RulePattern::CommandPrefix("rm -rf".into()),
+                ToolDecision::Deny {
+                    reason: "dangerous command".into(),
+                },
+            ),
+            PermissionRule::new(
+                RulePattern::CommandPrefix("sudo".into()),
+                ToolDecision::Deny {
+                    reason: "sudo not allowed".into(),
+                },
+            ),
+        ]);
+        let engine_policy = if let Some(channel) = approval_channel {
+            self.permission_engine
+                .policy_for_with_channel(self.active_agent.clone(), channel)
+        } else {
+            self.permission_engine.policy_for(self.active_agent.clone())
+        };
         let policy = Arc::new(ChainPolicy {
             first: Arc::new(safety_policy),
             second: engine_policy,
@@ -326,8 +352,7 @@ impl AgentDriver {
     fn build_model(&self) -> Result<Arc<dyn joker::Model>, TuiError> {
         match &self.runtime_config.provider {
             ProviderSelection::Scripted { .. } => {
-                Ok(Arc::new(ScriptedModel::new(self.scripted_steps()))
-                    as Arc<dyn joker::Model>)
+                Ok(Arc::new(ScriptedModel::new(self.scripted_steps())) as Arc<dyn joker::Model>)
             }
             ProviderSelection::Route(route) => {
                 let model = if route.default_model.is_empty() {
@@ -335,8 +360,7 @@ impl AgentDriver {
                 } else {
                     &route.default_model
                 };
-                route.build_model_for(model)
-                    .map_err(TuiError::Agent)
+                route.build_model_for(model).map_err(TuiError::Agent)
             }
         }
     }
@@ -346,6 +370,25 @@ impl AgentDriver {
             &self.runtime_config.scripted_response,
         ))]
     }
+}
+
+fn collect_assistant_text(conversation: &joker::Conversation) -> String {
+    conversation
+        .messages()
+        .iter()
+        .rev()
+        .find(|message| matches!(&message.role, joker::Role::Assistant))
+        .map(|message| {
+            message
+                .content
+                .iter()
+                .filter_map(|content| match content {
+                    joker::Content::Text(text) => Some(text.text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>()
+        })
+        .unwrap_or_default()
 }
 
 fn streaming_text_events(text: &str) -> Vec<ModelResponseEvent> {
@@ -385,16 +428,36 @@ const CHAIN_SEPARATORS: &[&str] = &["&&", "||", ";", "|", "`", "$("];
 /// Reference: CodeWhale's BashArityDict for distinction between "git" and "git log".
 const ARITY_TRUSTED_COMMANDS: &[&str] = &[
     // Rust toolchain
-    "cargo test", "cargo build", "cargo check", "cargo fmt",
-    "cargo clippy", "cargo doc", "cargo run",
+    "cargo test",
+    "cargo build",
+    "cargo check",
+    "cargo fmt",
+    "cargo clippy",
+    "cargo doc",
+    "cargo run",
     // Git (reading)
-    "git status", "git diff", "git log", "git show",
-    "git branch", "git stash", "git blame",
+    "git status",
+    "git diff",
+    "git log",
+    "git show",
+    "git branch",
+    "git stash",
+    "git blame",
     // File inspection
-    "ls ", "cat ", "head ", "tail ", "echo ", "pwd", "whoami",
-    "date", "which ", "type ", "file ",
+    "ls ",
+    "cat ",
+    "head ",
+    "tail ",
+    "echo ",
+    "pwd",
+    "whoami",
+    "date",
+    "which ",
+    "type ",
+    "file ",
     // Directory creation
-    "mkdir ", "touch ",
+    "mkdir ",
+    "touch ",
 ];
 
 impl ChainPolicy {
@@ -427,9 +490,7 @@ impl ChainPolicy {
     /// Check if a command contains redirection/pipeline operators.
     fn has_redirect_operators(command: &str) -> bool {
         const REDIRECT_PATTERNS: &[&str] = &["|", ">", "$(", "`"];
-        REDIRECT_PATTERNS
-            .iter()
-            .any(|op| command.contains(op))
+        REDIRECT_PATTERNS.iter().any(|op| command.contains(op))
     }
 }
 
@@ -448,52 +509,52 @@ impl ToolPolicy for ChainPolicy {
                     // 2. Checks each segment independently
                     // 3. DENY from any segment is terminal
                     // 4. ASK_USER from any segment downgrades ALLOW
-                    if request2.invocation.name.as_str() == "shell" {
-                        if let Some(cmd) = request2
+                    if request2.invocation.name.as_str() == "shell"
+                        && let Some(cmd) = request2
                             .invocation
                             .arguments
                             .get("command")
                             .and_then(|v| v.as_str())
-                        {
-                            let segments = Self::split_command_chain(cmd);
+                    {
+                        let segments = Self::split_command_chain(cmd);
 
-                            // Check each segment's trust level
-                            let mut worst_decision: Option<ToolDecision> = None;
-                            for segment in &segments {
-                                let seg_trimmed = segment.trim();
-                                if seg_trimmed.is_empty() {
-                                    continue;
-                                }
-
-                                // Check if this individual segment is arity-trusted
-                                let is_trusted = Self::is_arity_trusted(seg_trimmed);
-
-                                // If any segment is not trusted, downgrade the whole command
-                                if !is_trusted {
-                                    // Not arity-trusted: check redirect/pipeline
-                                    if Self::has_redirect_operators(seg_trimmed) {
-                                        worst_decision = Some(ToolDecision::Ask {
-                                            request_id: "chain-redirect".into(),
-                                            reason: format!(
-                                                "shell segment '{:.60}' contains redirect/pipeline operators",
-                                                seg_trimmed
-                                            ),
-                                        });
-                                    } else if !matches!(worst_decision, Some(ToolDecision::Deny { .. })) {
-                                        worst_decision = Some(ToolDecision::Ask {
-                                            request_id: "chain-unknown".into(),
-                                            reason: format!(
-                                                "shell segment '{:.60}' is not in trusted command list",
-                                                seg_trimmed
-                                            ),
-                                        });
-                                    }
-                                }
+                        // Check each segment's trust level
+                        let mut worst_decision: Option<ToolDecision> = None;
+                        for segment in &segments {
+                            let seg_trimmed = segment.trim();
+                            if seg_trimmed.is_empty() {
+                                continue;
                             }
 
-                            if let Some(decision) = worst_decision {
-                                return Ok(decision);
+                            // Check if this individual segment is arity-trusted
+                            let is_trusted = Self::is_arity_trusted(seg_trimmed);
+
+                            // If any segment is not trusted, downgrade the whole command
+                            if !is_trusted {
+                                // Not arity-trusted: check redirect/pipeline
+                                if Self::has_redirect_operators(seg_trimmed) {
+                                    worst_decision = Some(ToolDecision::Ask {
+                                        request_id: "chain-redirect".into(),
+                                        reason: format!(
+                                            "shell segment '{:.60}' contains redirect/pipeline operators",
+                                            seg_trimmed
+                                        ),
+                                    });
+                                } else if !matches!(worst_decision, Some(ToolDecision::Deny { .. }))
+                                {
+                                    worst_decision = Some(ToolDecision::Ask {
+                                        request_id: "chain-unknown".into(),
+                                        reason: format!(
+                                            "shell segment '{:.60}' is not in trusted command list",
+                                            seg_trimmed
+                                        ),
+                                    });
+                                }
                             }
+                        }
+
+                        if let Some(decision) = worst_decision {
+                            return Ok(decision);
                         }
                     }
 

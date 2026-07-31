@@ -192,11 +192,13 @@ impl Tool for TodoWriteTool {
 
             let items_json: Vec<serde_json::Value> = merged
                 .iter()
-                .map(|item| json!({
-                    "id": item.id,
-                    "status": item.status,
-                    "content": item.content,
-                }))
+                .map(|item| {
+                    json!({
+                        "id": item.id,
+                        "status": item.status,
+                        "content": item.content,
+                    })
+                })
                 .collect();
 
             Ok(ToolOutput::new(json!({
@@ -239,7 +241,11 @@ mod tests {
 
         assert_eq!(merged.len(), 2);
         assert!(merged.iter().any(|t| t.id == "1" && t.status == "pending"));
-        assert!(merged.iter().any(|t| t.id == "2" && t.status == "in_progress"));
+        assert!(
+            merged
+                .iter()
+                .any(|t| t.id == "2" && t.status == "in_progress")
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -293,15 +299,24 @@ mod tests {
             content: "Done task".into(),
         }];
         let result = merge_todos(&tmp, &update, false).await;
-        assert!(result.is_err(), "should reject completed→pending transition");
-        assert!(result.unwrap_err().to_string().contains("invalid status transition"));
+        assert!(
+            result.is_err(),
+            "should reject completed→pending transition"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid status transition")
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]
     async fn overwrite_bypasses_gating() {
-        let tmp = std::env::temp_dir().join(format!("joker-todo-overwrite2-{}", std::process::id()));
+        let tmp =
+            std::env::temp_dir().join(format!("joker-todo-overwrite2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
 
@@ -313,13 +328,11 @@ mod tests {
         merge_todos(&tmp, &initial, false).await.unwrap();
 
         // Overwrite with a fresh list
-        let fresh = vec![
-            TodoItem {
-                id: "1".into(),
-                status: "pending".into(),
-                content: "Redo".into(),
-            },
-        ];
+        let fresh = vec![TodoItem {
+            id: "1".into(),
+            status: "pending".into(),
+            content: "Redo".into(),
+        }];
         let merged = merge_todos(&tmp, &fresh, true).await.unwrap();
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].status, "pending");

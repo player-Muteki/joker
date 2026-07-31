@@ -1,4 +1,4 @@
-use criterion::{Criterion, BatchSize, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use joker::{Content, Conversation, JsonlSessionStore, SessionData, SessionStore};
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
@@ -7,7 +7,9 @@ fn make_session(size: usize) -> SessionData {
     let mut conv = Conversation::new();
     for i in 0..size {
         let msg = if i % 2 == 0 {
-            joker::Message::user(format!("message {i} content with padding for realistic length"))
+            joker::Message::user(format!(
+                "message {i} content with padding for realistic length"
+            ))
         } else {
             joker::Message::assistant(vec![Content::text(format!(
                 "response {i} with more realistic content length"
@@ -106,8 +108,9 @@ fn bench_fork_session(c: &mut Criterion) {
                     let store = JsonlSessionStore::new(dir.path()).unwrap();
                     let info = store.list().await.unwrap();
                     if let Some(first) = info.first() {
-                        let _ =
-                            store.fork(&first.id, "fork".into(), "build".into(), "gpt-4".into()).await;
+                        let _ = store
+                            .fork(&first.id, "fork".into(), "build".into(), "gpt-4".into())
+                            .await;
                     }
                 },
                 BatchSize::SmallInput,

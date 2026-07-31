@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 use joker_config::ConfigStore;
 
 use crate::app::App;
@@ -45,12 +45,7 @@ impl CommandRegistry {
     }
 
     /// Execute a command by parsing the input string.
-    pub fn execute(
-        &self,
-        input: &str,
-        app: &mut App,
-        config_store: &ConfigStore,
-    ) -> CommandResult {
+    pub fn execute(&self, input: &str, app: &mut App, config_store: &ConfigStore) -> CommandResult {
         let trimmed = input.trim().trim_start_matches('/');
         let mut parts = trimmed.splitn(2, char::is_whitespace);
         let name = parts.next().unwrap_or_default().to_ascii_lowercase();
@@ -96,7 +91,10 @@ impl CommandRegistry {
         let args_partial = parts.next().unwrap_or_default();
 
         if has_args
-            && let Some(entry) = self.entries.iter().find(|entry| entry.info.name == command_name)
+            && let Some(entry) = self
+                .entries
+                .iter()
+                .find(|entry| entry.info.name == command_name)
         {
             let completions = entry.handler.complete(args_partial);
             return completions

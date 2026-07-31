@@ -30,9 +30,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
+use crate::policy::PolicyFuture;
 use crate::policy::{SharedApprovalChannel, ToolDecision, ToolPolicy, ToolPolicyRequest};
 use crate::tool::{ToolName, ToolRegistry};
-use crate::policy::PolicyFuture;
 
 /// Returns the current unix timestamp in millis for serialization.
 fn now_millis() -> u64 {
@@ -169,7 +169,8 @@ impl PermissionEngine {
         } else {
             Vec::new()
         };
-        let grant_index = grants.iter()
+        let grant_index = grants
+            .iter()
             .map(|g| (g.agent_name.clone(), g.tool_name.clone()))
             .collect();
         info!(target: "permission", count = grants.len(), path = %path.display(), "loaded persisted session grants");
@@ -203,7 +204,9 @@ impl PermissionEngine {
                         }
                     }
                 }
-                Err(e) => warn!(target: "permission", error = %e, "failed to serialize session grants"),
+                Err(e) => {
+                    warn!(target: "permission", error = %e, "failed to serialize session grants")
+                }
             }
         }
     }
@@ -241,7 +244,8 @@ impl PermissionEngine {
 
     /// Check if a session grant exists.
     fn has_session_grant(&self, agent_name: &str, tool_name: &ToolName) -> bool {
-        self.grant_index.contains(&(agent_name.to_string(), tool_name.to_string()))
+        self.grant_index
+            .contains(&(agent_name.to_string(), tool_name.to_string()))
     }
 
     /// Check if a resource path matches a glob-like pattern.
@@ -294,7 +298,8 @@ impl PermissionEngine {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 for rule in &profile.hard_permission_rules {
-                    let tool_matches = rule.tool_pattern == "*" || rule.tool_pattern == tool_name.as_str();
+                    let tool_matches =
+                        rule.tool_pattern == "*" || rule.tool_pattern == tool_name.as_str();
                     let resource_matches = Self::path_matches(resource, &rule.resource_pattern);
                     if tool_matches && resource_matches {
                         match rule.setting {
@@ -333,19 +338,19 @@ impl PermissionEngine {
 
         // Level 2: Agent-level Disabled
         if let Some(profile) = profile
-            && let Some(PermissionSetting::Disabled) = profile.tool_permissions.get(tool_name) {
-                let reason = format!(
-                    "tool '{tool_name}' is disabled for agent '{agent_name}'"
-                );
-                warn!(target: "permission", agent = %agent_name, tool = %tool_name.as_str(), reason = %reason, "permission denied");
-                return PermissionDecision::Deny { reason };
-            }
+            && let Some(PermissionSetting::Disabled) = profile.tool_permissions.get(tool_name)
+        {
+            let reason = format!("tool '{tool_name}' is disabled for agent '{agent_name}'");
+            warn!(target: "permission", agent = %agent_name, tool = %tool_name.as_str(), reason = %reason, "permission denied");
+            return PermissionDecision::Deny { reason };
+        }
 
         // Level 3: Agent-level AutoAccept
         if let Some(profile) = profile
-            && let Some(PermissionSetting::AutoAccept) = profile.tool_permissions.get(tool_name) {
-                return PermissionDecision::Allow;
-            }
+            && let Some(PermissionSetting::AutoAccept) = profile.tool_permissions.get(tool_name)
+        {
+            return PermissionDecision::Allow;
+        }
 
         // Level 4: Session grant (fast index lookup)
         if self.has_session_grant(agent_name, tool_name) {
@@ -354,13 +359,14 @@ impl PermissionEngine {
 
         // Level 5: Agent-level Ask
         if let Some(profile) = profile
-            && let Some(PermissionSetting::Ask) = profile.tool_permissions.get(tool_name) {
-                return PermissionDecision::Ask {
-                    tool_name: tool_name.to_string(),
-                    reason: format!("agent '{agent_name}' requires approval for '{tool_name}'"),
-                    request_id: format!("ask-{agent_name}-{tool_name}"),
-                };
-            }
+            && let Some(PermissionSetting::Ask) = profile.tool_permissions.get(tool_name)
+        {
+            return PermissionDecision::Ask {
+                tool_name: tool_name.to_string(),
+                reason: format!("agent '{agent_name}' requires approval for '{tool_name}'"),
+                request_id: format!("ask-{agent_name}-{tool_name}"),
+            };
+        }
 
         // Level 6: Tool annotation default
         if is_mutating {
@@ -379,11 +385,7 @@ impl PermissionEngine {
     /// Disabled tools and tools blocked by blanket hard-permission rules are
     /// excluded so the model never sees their definitions.
     #[must_use]
-    pub fn materialize_tools(
-        &self,
-        agent_name: &str,
-        all_tools: &ToolRegistry,
-    ) -> ToolRegistry {
+    pub fn materialize_tools(&self, agent_name: &str, all_tools: &ToolRegistry) -> ToolRegistry {
         let profile = self.agent_permissions.get(agent_name);
         let mut filtered = ToolRegistry::new();
         for def in all_tools.definitions() {
@@ -401,16 +403,17 @@ impl PermissionEngine {
             if let Some(profile) = profile {
                 // Simple hard permission check
                 if let Some(PermissionSetting::Disabled) = &profile.hard_permission
-                    && def.annotations.is_mutating() {
-                        // But only skip if there are no allow-override rules
-                        let has_allow_override = profile.hard_permission_rules.iter().any(|r| {
-                            (r.tool_pattern == "*" || r.tool_pattern == def.name.as_str())
-                                && r.setting == PermissionSetting::AutoAccept
-                        });
-                        if !has_allow_override {
-                            continue;
-                        }
+                    && def.annotations.is_mutating()
+                {
+                    // But only skip if there are no allow-override rules
+                    let has_allow_override = profile.hard_permission_rules.iter().any(|r| {
+                        (r.tool_pattern == "*" || r.tool_pattern == def.name.as_str())
+                            && r.setting == PermissionSetting::AutoAccept
+                    });
+                    if !has_allow_override {
+                        continue;
                     }
+                }
                 // Pattern-based hard permission: if the tool itself is hard-disabled
                 // with resource_pattern="**" and no allow overrides, skip it
                 let has_blanket_deny = profile.hard_permission_rules.iter().any(|r| {
@@ -502,14 +505,12 @@ impl ToolPolicy for EnginePolicy {
             .definition
             .map(|d| d.annotations.is_mutating())
             .unwrap_or(true);
-        let decision = self
-            .engine
-            .evaluate(
-                &self.agent_name,
-                &request.invocation.name,
-                is_mutating,
-                Some(&request.invocation.arguments),
-            );
+        let decision = self.engine.evaluate(
+            &self.agent_name,
+            &request.invocation.name,
+            is_mutating,
+            Some(&request.invocation.arguments),
+        );
         Box::pin(async move {
             match decision {
                 PermissionDecision::Allow => Ok(ToolDecision::Allow),
@@ -671,6 +672,11 @@ mod tests {
         let registry = ToolRegistry::new();
         // We can't actually insert tools easily here — just verify definitions are filtered
         // The real filtering test uses all_tool_registry in integration tests
-        assert!(engine.materialize_tools("plan", &registry).definitions().is_empty());
+        assert!(
+            engine
+                .materialize_tools("plan", &registry)
+                .definitions()
+                .is_empty()
+        );
     }
 }

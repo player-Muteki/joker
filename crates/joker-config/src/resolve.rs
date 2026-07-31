@@ -3,10 +3,10 @@
 use joker_provider::Route;
 use tracing::info;
 
+use crate::RuntimeConfig;
 use crate::error::ConfigError;
 use crate::provider_selection::ProviderSelection;
 use crate::types::{ConfigOverrides, FileConfig};
-use crate::RuntimeConfig;
 
 /// Merge a [`FileConfig`] with CLI [`ConfigOverrides`] into a resolved [`RuntimeConfig`].
 pub fn resolve_config(
@@ -32,17 +32,19 @@ pub fn resolve_config(
         config.switch_model(model)?;
     }
     if let Some(base_url) = overrides.base_url.or(file.base_url.clone())
-        && let ProviderSelection::Route(route) = &mut config.provider {
-            route.base_url = base_url;
-        }
+        && let ProviderSelection::Route(route) = &mut config.provider
+    {
+        route.base_url = base_url;
+    }
     if let Some(api_key_env) = overrides.api_key_env.or(file.api_key_env.clone())
-        && let ProviderSelection::Route(route) = &mut config.provider {
-            let key = std::env::var(&api_key_env).ok();
-            route.auth.credentials = match key {
-                Some(v) => joker_provider::CredentialSource::Value(v),
-                None => joker_provider::CredentialSource::EnvVar(api_key_env),
-            };
-        }
+        && let ProviderSelection::Route(route) = &mut config.provider
+    {
+        let key = std::env::var(&api_key_env).ok();
+        route.auth.credentials = match key {
+            Some(v) => joker_provider::CredentialSource::Value(v),
+            None => joker_provider::CredentialSource::EnvVar(api_key_env),
+        };
+    }
 
     // Preserve agent profile configs and MCP server configs for restart
     // (OUTLINE.md 10.3: modified RuntimeConfig to retain resolved configs).

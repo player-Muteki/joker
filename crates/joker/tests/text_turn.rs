@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use joker::{Agent, AgentConfig, Content, RetryConfig, RunRequest, ScriptedModel, ScriptedStep, StopReason};
+use joker::{
+    Agent, AgentConfig, Content, RetryConfig, RunRequest, ScriptedModel, ScriptedStep, StopReason,
+};
 
 #[tokio::test]
 async fn text_turn_appends_user_and_final_assistant_message() {

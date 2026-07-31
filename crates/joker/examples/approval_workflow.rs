@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use joker::{
-    Agent, AgentBuilder, ApprovalResponse, RunRequest, ScriptedModel, ScriptedStep,
-    SharedApprovalChannel, ToolAnnotations, ToolDefinition, ToolFn, ToolFuture, ToolInvocation,
-    ToolName, ToolOutput, ToolRegistry,
+    AgentBuilder, ApprovalResponse, RunRequest, ScriptedModel, ScriptedStep, SharedApprovalChannel,
+    ToolAnnotations, ToolDefinition, ToolFn, ToolFuture, ToolInvocation, ToolName, ToolOutput,
+    ToolRegistry,
 };
 use serde_json::json;
 
@@ -46,9 +46,14 @@ async fn main() {
 
     if let Some(req) = channel.pending_request() {
         println!("approval needed for: {} ({})", req.tool_name, req.reason);
-        channel.respond(ApprovalResponse::Approved { remember_for_session: false });
+        channel.respond(ApprovalResponse::Approved {
+            remember_for_session: false,
+        });
     }
 
     let outcome = handle.await.unwrap().unwrap();
-    println!("final message: {:?}", outcome.conversation.messages().last());
+    println!(
+        "final message: {:?}",
+        outcome.conversation.messages().last()
+    );
 }

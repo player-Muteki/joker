@@ -1,10 +1,14 @@
-use joker::{
-    AgentPermission, PermissionEngine, PermissionSetting, ToolName,
-};
+use joker::{PermissionEngine, ToolName};
 
 fn print_profile(engine: &PermissionEngine, name: &str) {
     println!("agent: {name}");
-    for tool in ["read_file", "write_file", "shell", "web_search", "memory_read"] {
+    for tool in [
+        "read_file",
+        "write_file",
+        "shell",
+        "web_search",
+        "memory_read",
+    ] {
         let tool_name = ToolName::new(tool);
         let decision = engine.evaluate(name, &tool_name, true, None);
         println!("  {tool}: {decision:?}");

@@ -125,7 +125,11 @@ async fn no_hooks_registered_is_noop() {
     let mut conversation = Conversation::new();
     let empty_messages = &mut Vec::new();
 
-    assert!(registry.before_tool_call(&invocation, &conversation).is_ok());
+    assert!(
+        registry
+            .before_tool_call(&invocation, &conversation)
+            .is_ok()
+    );
     registry.after_tool_call(&invocation, &mut output, &mut conversation);
     registry.before_provider_request(empty_messages);
     registry.on_session_start("agent");
@@ -177,7 +181,9 @@ async fn multiple_hooks_fire_in_registration_order() {
     let mut output = ToolOutput::new(json!("v"));
     let mut conversation = Conversation::new();
 
-    registry.before_tool_call(&invocation, &conversation).unwrap();
+    registry
+        .before_tool_call(&invocation, &conversation)
+        .unwrap();
     registry.after_tool_call(&invocation, &mut output, &mut conversation);
 
     let recorded = order.lock().unwrap().clone();

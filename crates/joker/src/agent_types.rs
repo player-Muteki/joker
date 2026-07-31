@@ -51,7 +51,12 @@ impl RunRequest {
     /// Create a request from an existing [`Conversation`] with no additional input.
     #[must_use]
     pub fn with_conversation(conversation: Conversation) -> Self {
-        Self { conversation, input: None, approval_channel: None, cancellation_token: None }
+        Self {
+            conversation,
+            input: None,
+            approval_channel: None,
+            cancellation_token: None,
+        }
     }
 
     /// Attach an approval channel for interactive tool approval.

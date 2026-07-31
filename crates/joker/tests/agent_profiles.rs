@@ -1,7 +1,7 @@
 use joker::{
-    builtin_agent_profiles, builtin_constraint_file_content, PermissionDecision,
-    PermissionEngine, PermissionSetting, ToolAnnotations, ToolDefinition, ToolExecution,
-    ToolFn, ToolFuture, ToolInvocation, ToolName, ToolOutput, ToolRegistry,
+    PermissionDecision, PermissionEngine, PermissionSetting, ToolAnnotations, ToolDefinition,
+    ToolExecution, ToolFn, ToolFuture, ToolInvocation, ToolName, ToolOutput, ToolRegistry,
+    builtin_agent_profiles, builtin_constraint_file_content,
 };
 use serde_json::json;
 
@@ -23,9 +23,7 @@ fn make_tool(
             },
         },
         |invocation: ToolInvocation| -> ToolFuture<'static> {
-            Box::pin(async move {
-                Ok(ToolOutput::new(json!({"name": invocation.name.as_str()})))
-            })
+            Box::pin(async move { Ok(ToolOutput::new(json!({"name": invocation.name.as_str()}))) })
         },
     )
 }
@@ -56,17 +54,20 @@ fn make_all_tools() -> ToolRegistry {
     reg
 }
 
-fn find_profile<'a>(profiles: &'a [joker::AgentPermission], name: &str) -> &'a joker::AgentPermission {
+fn find_profile<'a>(
+    profiles: &'a [joker::AgentPermission],
+    name: &str,
+) -> &'a joker::AgentPermission {
     profiles.iter().find(|p| p.agent_name == name).unwrap()
 }
 
-fn check_perm(
-    profile: &joker::AgentPermission,
-    tool: &str,
-    expected: PermissionSetting,
-) {
+fn check_perm(profile: &joker::AgentPermission, tool: &str, expected: PermissionSetting) {
     let actual = profile.tool_permissions.get(&ToolName::new(tool));
-    assert_eq!(actual, Some(&expected), "plan agent: tool '{tool}' permission mismatch");
+    assert_eq!(
+        actual,
+        Some(&expected),
+        "plan agent: tool '{tool}' permission mismatch"
+    );
 }
 
 fn register_profiles(engine: &mut PermissionEngine) {
@@ -154,10 +155,17 @@ fn test_yolo_profile_permissions() {
     );
 
     let auto_accept_tools = [
-        "list_files", "read_file", "grep", "glob",
-        "write_file", "edit_file", "apply_patch",
-        "shell", "todo_write",
-        "memory_read", "memory_write",
+        "list_files",
+        "read_file",
+        "grep",
+        "glob",
+        "write_file",
+        "edit_file",
+        "apply_patch",
+        "shell",
+        "todo_write",
+        "memory_read",
+        "memory_write",
     ];
     for tool in &auto_accept_tools {
         check_perm(yolo, tool, PermissionSetting::AutoAccept);
@@ -300,7 +308,13 @@ fn test_plan_materialize_filters_disabled_tools() {
         .collect();
 
     // Disabled tools must be filtered out
-    for tool in &["write_file", "edit_file", "apply_patch", "shell", "todo_write"] {
+    for tool in &[
+        "write_file",
+        "edit_file",
+        "apply_patch",
+        "shell",
+        "todo_write",
+    ] {
         assert!(
             !present.contains(&tool.to_string()),
             "disabled tool '{tool}' should be filtered out by plan materialize"
@@ -309,9 +323,14 @@ fn test_plan_materialize_filters_disabled_tools() {
 
     // Read-only, memory, and network tools must be present
     for tool in &[
-        "list_files", "read_file", "grep", "glob",
-        "web_search", "fetch_url",
-        "memory_read", "memory_write",
+        "list_files",
+        "read_file",
+        "grep",
+        "glob",
+        "web_search",
+        "fetch_url",
+        "memory_read",
+        "memory_write",
     ] {
         assert!(
             present.contains(&tool.to_string()),

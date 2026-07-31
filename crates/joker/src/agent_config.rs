@@ -37,7 +37,11 @@ pub struct RetryConfig {
 
 impl Default for RetryConfig {
     fn default() -> Self {
-        Self { max_stream_retries: 4, max_zero_output_retries: 3, base_delay_ms: 1000 }
+        Self {
+            max_stream_retries: 4,
+            max_zero_output_retries: 3,
+            base_delay_ms: 1000,
+        }
     }
 }
 
@@ -52,7 +56,10 @@ pub struct RunLimits {
 
 impl Default for RunLimits {
     fn default() -> Self {
-        Self { max_steps: 16, max_tool_calls: 64 }
+        Self {
+            max_steps: 16,
+            max_tool_calls: 64,
+        }
     }
 }
 

@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 
 use crate::error::ConfigError;
-use crate::runtime::RuntimeConfig;
 use crate::resolve::resolve_config;
+use crate::runtime::RuntimeConfig;
 use crate::types::{ConfigOverrides, FileConfig};
 
 /// Manages reading and writing the on-disk `joker.toml` configuration file.

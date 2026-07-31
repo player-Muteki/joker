@@ -20,6 +20,9 @@ pub enum TuiError {
     /// Configuration parsing or loading error.
     #[error("config error: {0}")]
     Config(#[from] joker_config::ConfigError),
+    /// Invalid command-line usage or non-interactive preflight failure.
+    #[error("{0}")]
+    Cli(String),
     /// The internal event channel was closed unexpectedly.
     #[error("event channel closed")]
     ChannelClosed,

@@ -280,24 +280,26 @@ impl ToolPolicy for PermissionPolicy {
                     .arguments
                     .get("command")
                     .and_then(|v| v.as_str())
-                    && self.shell_has_chaining(cmd) {
-                        return Ok(ToolDecision::Ask {
-                            request_id: format!("ask-shell-chain-{}", now_nanos()),
-                            reason: format!(
-                                "shell command with chaining/redirect requires approval: {cmd}"
-                            ),
-                        });
-                    }
+                && self.shell_has_chaining(cmd)
+            {
+                return Ok(ToolDecision::Ask {
+                    request_id: format!("ask-shell-chain-{}", now_nanos()),
+                    reason: format!(
+                        "shell command with chaining/redirect requires approval: {cmd}"
+                    ),
+                });
+            }
 
             // Level 5: Tool annotation default
             if let Some(definition) = request.definition
-                && definition.annotations.is_mutating() {
-                    let mut decision = self.default_for_mutating.clone();
-                    if let ToolDecision::Ask { request_id, .. } = &mut decision {
-                        *request_id = format!("ask-{}", tool_name);
-                    }
-                    return Ok(decision);
+                && definition.annotations.is_mutating()
+            {
+                let mut decision = self.default_for_mutating.clone();
+                if let ToolDecision::Ask { request_id, .. } = &mut decision {
+                    *request_id = format!("ask-{}", tool_name);
                 }
+                return Ok(decision);
+            }
 
             // Level 6: Global default — Allow
             Ok(ToolDecision::Allow)
@@ -345,24 +347,20 @@ impl RulePattern {
         match self {
             RulePattern::ToolName(name) => tool_name == name,
             RulePattern::ToolCategory(category) => category.matches(tool_name),
-            RulePattern::PathPrefix(prefix) => {
-                request
-                    .invocation
-                    .arguments
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .map(|p| p.starts_with(prefix))
-                    .unwrap_or(false)
-            }
-            RulePattern::CommandPrefix(prefix) => {
-                request
-                    .invocation
-                    .arguments
-                    .get("command")
-                    .and_then(|v| v.as_str())
-                    .map(|c| c.trim_start().starts_with(prefix))
-                    .unwrap_or(false)
-            }
+            RulePattern::PathPrefix(prefix) => request
+                .invocation
+                .arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|p| p.starts_with(prefix))
+                .unwrap_or(false),
+            RulePattern::CommandPrefix(prefix) => request
+                .invocation
+                .arguments
+                .get("command")
+                .and_then(|v| v.as_str())
+                .map(|c| c.trim_start().starts_with(prefix))
+                .unwrap_or(false),
         }
     }
 }
@@ -383,10 +381,7 @@ pub enum ToolCategory {
 impl ToolCategory {
     fn matches(&self, tool_name: &str) -> bool {
         match self {
-            ToolCategory::Read => matches!(
-                tool_name,
-                "read_file" | "list_files" | "grep" | "read"
-            ),
+            ToolCategory::Read => matches!(tool_name, "read_file" | "list_files" | "grep" | "read"),
             ToolCategory::Write => matches!(
                 tool_name,
                 "write_file" | "edit_file" | "apply_patch" | "create_file"
@@ -424,9 +419,11 @@ impl ToolPolicy for DenyAllMutatingPolicy {
     fn evaluate<'a>(&'a self, request: ToolPolicyRequest<'a>) -> PolicyFuture<'a> {
         Box::pin(async move {
             match request.definition {
-                Some(definition) if definition.annotations.is_mutating() => Ok(ToolDecision::Deny {
-                    reason: "mutating tools are denied".into(),
-                }),
+                Some(definition) if definition.annotations.is_mutating() => {
+                    Ok(ToolDecision::Deny {
+                        reason: "mutating tools are denied".into(),
+                    })
+                }
                 _ => Ok(ToolDecision::Allow),
             }
         })
@@ -450,9 +447,9 @@ impl BashArityDict {
     pub fn new() -> Self {
         // Common tool command prefixes and their expected subcommand depth
         let entries: Vec<(&str, usize)> = vec![
-            ("git", 2),    // git <subcommand>
-            ("cargo", 2),  // cargo <subcommand>
-            ("npm", 2),    // npm <subcommand>
+            ("git", 2),   // git <subcommand>
+            ("cargo", 2), // cargo <subcommand>
+            ("npm", 2),   // npm <subcommand>
             ("pnpm", 2),
             ("yarn", 2),
             ("bun", 2),
@@ -468,7 +465,7 @@ impl BashArityDict {
             ("pip", 2),
             ("pip3", 2),
             ("rustup", 2),
-            ("go", 2),     // go <subcommand>
+            ("go", 2), // go <subcommand>
             ("deno", 2),
             ("node", 1),
             ("npx", 2),
@@ -529,7 +526,10 @@ impl BashArityDict {
         for (prefix, arity) in &self.entries {
             if let Some(after_prefix) = trimmed.strip_prefix(prefix) {
                 // Prefix must be followed by space, tab, or end-of-string
-                if after_prefix.is_empty() || after_prefix.starts_with(' ') || after_prefix.starts_with('\t') {
+                if after_prefix.is_empty()
+                    || after_prefix.starts_with(' ')
+                    || after_prefix.starts_with('\t')
+                {
                     return Some((prefix, *arity));
                 }
             }

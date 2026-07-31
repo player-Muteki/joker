@@ -44,7 +44,10 @@ impl SlashCommand for ProviderCommand {
         };
         match app.runtime_config.switch_provider(provider) {
             Ok(()) => CommandResult::with_message_and_action(
-                format!("Switched provider to {}", app.runtime_config.provider_label()),
+                format!(
+                    "Switched provider to {}",
+                    app.runtime_config.provider_label()
+                ),
                 CommandAction::ConfigChanged,
             ),
             Err(error) => CommandResult::error(error.to_string()),
@@ -62,7 +65,14 @@ impl SlashCommand for ProviderCommand {
 }
 
 const PROVIDER_IDS: &[&str] = &[
-    DEEPSEEK.id, ALIBABA.id, ZHIPUAI.id, MOONSHOT.id, BAIDU.id, ANTHROPIC.id, GOOGLE.id, "scripted",
+    DEEPSEEK.id,
+    ALIBABA.id,
+    ZHIPUAI.id,
+    MOONSHOT.id,
+    BAIDU.id,
+    ANTHROPIC.id,
+    GOOGLE.id,
+    "scripted",
 ];
 
 fn available_providers_for_dialog() -> Vec<(String, String)> {

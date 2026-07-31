@@ -173,12 +173,10 @@ impl SummaryContextBuilder {
             .iter()
             .find(|m| m.role == crate::Role::User)
             .and_then(|m| {
-                m.content
-                    .iter()
-                    .find_map(|c| match c {
-                        Content::Text(t) => Some(t.text.clone()),
-                        _ => None,
-                    })
+                m.content.iter().find_map(|c| match c {
+                    Content::Text(t) => Some(t.text.clone()),
+                    _ => None,
+                })
             })
             .unwrap_or_default();
 
@@ -311,7 +309,7 @@ pub struct ContextThresholds {
 impl Default for ContextThresholds {
     fn default() -> Self {
         Self {
-            soft_tokens: 48_000,   // 50% of 96K
+            soft_tokens: 48_000,    // 50% of 96K
             compact_tokens: 76_800, // 80% of 96K
             force_tokens: 86_400,   // 90% of 96K
             recent_messages: 8,
@@ -375,7 +373,9 @@ pub fn micro_dedup_messages(messages: &mut [Message]) -> usize {
                     continue;
                 }
                 // Try to detect read_file results by looking for "path" and "content"
-                let detected_path = output_str.lines().next()
+                let detected_path = output_str
+                    .lines()
+                    .next()
                     .and_then(|l| l.strip_prefix("path:").map(String::from))
                     .or_else(|| {
                         serde_json::from_str::<serde_json::Value>(&output_str)
@@ -383,7 +383,9 @@ pub fn micro_dedup_messages(messages: &mut [Message]) -> usize {
                             .and_then(|v| v.get("path").and_then(|p| p.as_str().map(String::from)))
                     })
                     .or_else(|| {
-                        output_str.lines().find(|l| l.trim().starts_with('"'))
+                        output_str
+                            .lines()
+                            .find(|l| l.trim().starts_with('"'))
                             .map(|l| l.trim_matches('"').to_string())
                     });
                 if let Some(path) = detected_path {
@@ -391,7 +393,8 @@ pub fn micro_dedup_messages(messages: &mut [Message]) -> usize {
                         // Replace with stub
                         result.output = serde_json::Value::String(format!(
                             "[stub] Same file content as tool result #{} ({} bytes). See earlier result.",
-                            first_idx, output_str.len()
+                            first_idx,
+                            output_str.len()
                         ));
                         dedup_count += 1;
                     } else {
@@ -466,11 +469,14 @@ impl ContextBuilder for CompactingContextBuilder {
                 }
                 CompactionLevel::Compact => {
                     let tokens_before = estimate_tokens(&messages);
-                    let _ = self.observer.observe(Event::CompactionStarted {
-                        trigger: "threshold".into(),
-                        current_tokens: tokens_before,
-                        threshold: self.thresholds.compact_tokens,
-                    }).await;
+                    let _ = self
+                        .observer
+                        .observe(Event::CompactionStarted {
+                            trigger: "threshold".into(),
+                            current_tokens: tokens_before,
+                            threshold: self.thresholds.compact_tokens,
+                        })
+                        .await;
 
                     // Keep summary of old + recent window
                     let recent = self.thresholds.recent_messages;
@@ -496,20 +502,26 @@ impl ContextBuilder for CompactingContextBuilder {
                         enforce_limits(&built, input.limits)?;
 
                         let tokens_after = estimate_tokens(&built);
-                        let _ = self.observer.observe(Event::CompactionDone {
-                            tokens_before,
-                            tokens_after,
-                        }).await;
+                        let _ = self
+                            .observer
+                            .observe(Event::CompactionDone {
+                                tokens_before,
+                                tokens_after,
+                            })
+                            .await;
                         return Ok(BuiltContext { messages: built });
                     }
                 }
                 CompactionLevel::Force => {
                     let tokens_before = estimate_tokens(&messages);
-                    let _ = self.observer.observe(Event::CompactionStarted {
-                        trigger: "force".into(),
-                        current_tokens: tokens_before,
-                        threshold: self.thresholds.force_tokens,
-                    }).await;
+                    let _ = self
+                        .observer
+                        .observe(Event::CompactionStarted {
+                            trigger: "force".into(),
+                            current_tokens: tokens_before,
+                            threshold: self.thresholds.force_tokens,
+                        })
+                        .await;
 
                     // Force: only keep system prompts + last K messages
                     let recent = self.thresholds.recent_messages.min(4);
@@ -539,10 +551,13 @@ impl ContextBuilder for CompactingContextBuilder {
                     enforce_limits(&built, input.limits)?;
 
                     let tokens_after = estimate_tokens(&built);
-                    let _ = self.observer.observe(Event::CompactionDone {
-                        tokens_before,
-                        tokens_after,
-                    }).await;
+                    let _ = self
+                        .observer
+                        .observe(Event::CompactionDone {
+                            tokens_before,
+                            tokens_after,
+                        })
+                        .await;
                     return Ok(BuiltContext { messages: built });
                 }
             }
@@ -579,10 +594,13 @@ impl ContextBuilder for PrefixedContextBuilder {
         Box::pin(async move {
             let mut built = self.inner.build(input).await?;
             if !self.prefix.is_empty() {
-                built.messages.insert(0, Message {
-                    role: crate::Role::System,
-                    content: vec![Content::text(self.prefix.clone())],
-                });
+                built.messages.insert(
+                    0,
+                    Message {
+                        role: crate::Role::System,
+                        content: vec![Content::text(self.prefix.clone())],
+                    },
+                );
             }
             Ok(built)
         })

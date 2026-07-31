@@ -66,17 +66,28 @@ pub struct Auth {
 impl Auth {
     /// Create an unauthenticated [`Auth`] bundle.
     pub const fn none() -> Self {
-        Self { scheme: AuthScheme::None, credentials: CredentialSource::None }
+        Self {
+            scheme: AuthScheme::None,
+            credentials: CredentialSource::None,
+        }
     }
 
     /// Create a bearer-token [`Auth`] sourced from an environment variable.
     pub fn bearer_from_env(env_var: &str) -> Self {
-        Self { scheme: AuthScheme::Bearer, credentials: CredentialSource::EnvVar(env_var.into()) }
+        Self {
+            scheme: AuthScheme::Bearer,
+            credentials: CredentialSource::EnvVar(env_var.into()),
+        }
     }
 
     /// Create an API-key-header [`Auth`] sourced from an environment variable.
     pub fn api_key_from_env(header: &str, env_var: &str) -> Self {
-        Self { scheme: AuthScheme::ApiKey { header: header.into() }, credentials: CredentialSource::EnvVar(env_var.into()) }
+        Self {
+            scheme: AuthScheme::ApiKey {
+                header: header.into(),
+            },
+            credentials: CredentialSource::EnvVar(env_var.into()),
+        }
     }
 
     /// Resolve the concrete HTTP header name and value, if available.
@@ -88,9 +99,9 @@ impl Auth {
             (AuthScheme::Bearer, CredentialSource::Value(v)) => {
                 Some(("Authorization".into(), format!("Bearer {v}")))
             }
-            (AuthScheme::Bearer, CredentialSource::EnvVar(name)) => {
-                std::env::var(name).ok().map(|v| ("Authorization".into(), format!("Bearer {v}")))
-            }
+            (AuthScheme::Bearer, CredentialSource::EnvVar(name)) => std::env::var(name)
+                .ok()
+                .map(|v| ("Authorization".into(), format!("Bearer {v}"))),
             (AuthScheme::ApiKey { header }, CredentialSource::Value(v)) => {
                 Some((header.clone(), v.clone()))
             }
@@ -160,8 +171,7 @@ impl Route {
                     extra_body: None,
                 };
                 Ok(Arc::new(
-                    crate::openai::OpenAiCompatibleModel::new(config)
-                        .map_err(|e| e.to_string())?,
+                    crate::openai::OpenAiCompatibleModel::new(config).map_err(|e| e.to_string())?,
                 ) as Arc<dyn Model>)
             }
             Protocol::AnthropicMessages => {
@@ -172,8 +182,7 @@ impl Route {
                     api_key: key,
                 };
                 Ok(Arc::new(
-                    crate::anthropic::AnthropicModel::new(config)
-                        .map_err(|e| e.to_string())?,
+                    crate::anthropic::AnthropicModel::new(config).map_err(|e| e.to_string())?,
                 ) as Arc<dyn Model>)
             }
             Protocol::GoogleGemini => {
@@ -183,9 +192,10 @@ impl Route {
                     model: model.into(),
                     api_key: key,
                 };
-                Ok(Arc::new(
-                    crate::google::GoogleModel::new(config).map_err(|e| e.to_string())?,
-                ) as Arc<dyn Model>)
+                Ok(
+                    Arc::new(crate::google::GoogleModel::new(config).map_err(|e| e.to_string())?)
+                        as Arc<dyn Model>,
+                )
             }
         }
     }
@@ -201,7 +211,10 @@ mod tests {
             id: "test".into(),
             protocol: Protocol::ChatCompletions,
             base_url: "https://api.openai.com/v1".into(),
-            auth: Auth { scheme: AuthScheme::Bearer, credentials: CredentialSource::EnvVar("OPENAI_API_KEY".into()) },
+            auth: Auth {
+                scheme: AuthScheme::Bearer,
+                credentials: CredentialSource::EnvVar("OPENAI_API_KEY".into()),
+            },
             framing: Framing::Sse,
             default_model: "gpt-4".into(),
         };
@@ -218,8 +231,16 @@ mod tests {
     #[test]
     fn auth_api_key_from_env() {
         let auth = Auth::api_key_from_env("x-api-key", "ANTHROPIC_API_KEY");
-        assert_eq!(auth.scheme, AuthScheme::ApiKey { header: "x-api-key".into() });
-        assert_eq!(auth.credentials, CredentialSource::EnvVar("ANTHROPIC_API_KEY".into()));
+        assert_eq!(
+            auth.scheme,
+            AuthScheme::ApiKey {
+                header: "x-api-key".into()
+            }
+        );
+        assert_eq!(
+            auth.credentials,
+            CredentialSource::EnvVar("ANTHROPIC_API_KEY".into())
+        );
     }
 
     #[test]

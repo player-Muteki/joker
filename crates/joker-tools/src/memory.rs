@@ -82,7 +82,8 @@ impl MemoryStore {
                     };
 
                     let target = self.workspace.join(path_str);
-                    if target.exists() && target.starts_with(&self.workspace)
+                    if target.exists()
+                        && target.starts_with(&self.workspace)
                         && let Ok(content) = fs::read_to_string(&target)
                     {
                         let snippet = if let Some(range) = line_range {
@@ -111,9 +112,15 @@ impl MemoryStore {
 fn extract_lines(content: &str, range: &str) -> String {
     let range = range.strip_prefix('L').unwrap_or(range);
     let (start, end) = if let Some((s, e)) = range.split_once("-L") {
-        (s.parse::<usize>().unwrap_or(1), e.parse::<usize>().unwrap_or(usize::MAX))
+        (
+            s.parse::<usize>().unwrap_or(1),
+            e.parse::<usize>().unwrap_or(usize::MAX),
+        )
     } else if let Some((s, e)) = range.split_once('-') {
-        (s.parse::<usize>().unwrap_or(1), e.parse::<usize>().unwrap_or(usize::MAX))
+        (
+            s.parse::<usize>().unwrap_or(1),
+            e.parse::<usize>().unwrap_or(usize::MAX),
+        )
     } else {
         (range.parse::<usize>().unwrap_or(1), usize::MAX)
     };
@@ -171,7 +178,8 @@ impl Tool for MemoryReadTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: ToolName::new("memory_read"),
-            description: "Read memory entries. Use 'list' to see all entries, or search with a query.".into(),
+            description:
+                "Read memory entries. Use 'list' to see all entries, or search with a query.".into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -196,9 +204,10 @@ impl Tool for MemoryReadTool {
             .to_string();
 
         Box::pin(async move {
-            let store = self.store.lock().map_err(|e| {
-                ToolError::Execution(format!("memory store lock: {e}"))
-            })?;
+            let store = self
+                .store
+                .lock()
+                .map_err(|e| ToolError::Execution(format!("memory store lock: {e}")))?;
             store.ensure_dir()?;
 
             let index_path = store.index_path();
@@ -222,7 +231,10 @@ impl Tool for MemoryReadTool {
                 }
                 let (meta, body) = parse_frontmatter(trimmed);
                 let body_text = body.trim();
-                if query.is_empty() || body_text.contains(&query) || meta.to_string().contains(&query) {
+                if query.is_empty()
+                    || body_text.contains(&query)
+                    || meta.to_string().contains(&query)
+                {
                     entries.push(json!({
                         "content": body_text,
                         "metadata": meta,
@@ -287,9 +299,10 @@ impl Tool for MemoryWriteTool {
                 return Err(ToolError::InvalidArguments("note cannot be empty".into()));
             }
 
-            let store = self.store.lock().map_err(|e| {
-                ToolError::Execution(format!("memory store lock: {e}"))
-            })?;
+            let store = self
+                .store
+                .lock()
+                .map_err(|e| ToolError::Execution(format!("memory store lock: {e}")))?;
             store.ensure_dir()?;
 
             // Expand @path references
@@ -322,10 +335,7 @@ impl Tool for MemoryWriteTool {
 
             // Parse frontmatter from expanded note
             let (_meta, body) = parse_frontmatter(&expanded);
-            let entry = format!(
-                "---\nts: {ts}\n---\n{note}\n",
-                ts = chrono_now(),
-            );
+            let entry = format!("---\nts: {ts}\n---\n{note}\n", ts = chrono_now(),);
 
             content.push_str(&entry);
 
@@ -342,7 +352,9 @@ impl Tool for MemoryWriteTool {
 
 fn chrono_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = duration.as_secs();
     let (year, month, day, hour, min) = {
         let days = secs / 86400;
@@ -406,7 +418,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(output.output["written"].as_bool().unwrap_or(false), "write failed");
+        assert!(
+            output.output["written"].as_bool().unwrap_or(false),
+            "write failed"
+        );
 
         // Read it back
         let output = read_tool

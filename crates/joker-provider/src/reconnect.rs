@@ -27,7 +27,11 @@ impl ReconnectingModel {
     /// Defaults to 3 retries with a 1-second base delay.
     #[must_use]
     pub fn new(inner: Arc<dyn Model>) -> Self {
-        Self { inner, max_retries: 3, base_delay_ms: 1000 }
+        Self {
+            inner,
+            max_retries: 3,
+            base_delay_ms: 1000,
+        }
     }
 
     /// Set the maximum number of retry attempts.
@@ -117,7 +121,9 @@ impl ReconnectDetector {
                     return;
                 }
                 None => {
-                    let _ = self.tx.send(Err(ModelError::Stream("stream ended unexpectedly".into())));
+                    let _ = self
+                        .tx
+                        .send(Err(ModelError::Stream("stream ended unexpectedly".into())));
                     return;
                 }
             }

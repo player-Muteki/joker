@@ -18,8 +18,8 @@ pub mod protocol;
 pub mod reconnect;
 pub mod transform;
 
-pub use openai::{OpenAiCompatibleConfig, OpenAiCompatibleModel, OpenAiProviderError};
-pub use protocol::*;
 pub use model_discovery::*;
+pub use openai::{OpenAiCompatibleConfig, OpenAiCompatibleModel, OpenAiProviderError};
 pub use profiles::*;
+pub use protocol::*;
 pub use reconnect::ReconnectingModel;

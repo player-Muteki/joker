@@ -127,8 +127,8 @@ impl DuckDuckGoSearch {
             {
                 if let Some(st) = Self::find_substring(html_bytes, snip_start, ">") {
                     let s_start = st + 1;
-                    let s_end = Self::find_substring(html_bytes, s_start, "</a>")
-                        .unwrap_or(s_start + 200);
+                    let s_end =
+                        Self::find_substring(html_bytes, s_start, "</a>").unwrap_or(s_start + 200);
                     String::from_utf8_lossy(&html_bytes[s_start..s_end])
                         .replace("&amp;", "&")
                         .replace("&lt;", "<")
@@ -161,7 +161,6 @@ impl DuckDuckGoSearch {
             .position(|w| w == needle_bytes)
             .map(|p| start + p)
     }
-
 }
 
 impl WebSearch for DuckDuckGoSearch {

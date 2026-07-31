@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use joker::{
     Agent, AgentRuntime, Event, Op, RecordingObserver, RunRequest, ScriptedModel, ScriptedStep,
-    Tool, ToolAnnotations, ToolDefinition, ToolFn, ToolFuture, ToolInvocation, ToolName, ToolOutput,
+    ToolAnnotations, ToolDefinition, ToolFn, ToolFuture, ToolInvocation, ToolName, ToolOutput,
     ToolRegistry,
 };
 use serde_json::json;
@@ -41,9 +41,7 @@ async fn main() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
 
-    let handle = tokio::spawn(async move {
-        runtime.run(RunRequest::new("start"), &mut rx).await
-    });
+    let handle = tokio::spawn(async move { runtime.run(RunRequest::new("start"), &mut rx).await });
 
     tx.send(Op::Compact).unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;

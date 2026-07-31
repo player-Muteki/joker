@@ -12,8 +12,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::*;
 
-/// Workspace resolution utilities.
-pub mod workspace;
 mod apply_patch;
 mod edit;
 mod fetch_url;
@@ -27,9 +25,11 @@ mod read_file;
 mod shell;
 /// TODO task management tool.
 pub mod todo;
-mod write_file;
 /// Web search via DuckDuckGo.
 pub mod web_search;
+/// Workspace resolution utilities.
+pub mod workspace;
+mod write_file;
 
 use joker::ToolRegistry;
 
@@ -43,8 +43,8 @@ use edit::EditFileTool;
 use fetch_url::FetchUrlTool;
 use glob::GlobTool;
 use grep::GrepTool;
-use list_files::ListFilesTool;
 use joker::WebSearch;
+use list_files::ListFilesTool;
 use memory::{MemoryReadTool, MemoryWriteTool};
 use read_file::ReadFileTool;
 use shell::ShellTool;
@@ -96,9 +96,7 @@ pub fn writeable_tools(workspace: impl Into<PathBuf>) -> Result<Arc<ToolRegistry
 ///
 /// Adds [`WriteFileTool`], [`EditFileTool`], [`ShellTool`], [`ApplyPatchTool`],
 /// [`FetchUrlTool`], and [`TodoWriteTool`].
-pub fn writeable_tool_registry(
-    workspace: impl Into<PathBuf>,
-) -> Result<ToolRegistry, ToolsError> {
+pub fn writeable_tool_registry(workspace: impl Into<PathBuf>) -> Result<ToolRegistry, ToolsError> {
     let workspace = workspace.into();
     let mut registry = readonly_tool_registry(workspace.clone())?;
     registry.insert(WriteFileTool::new(workspace.clone()))?;
@@ -120,9 +118,7 @@ pub fn all_tools(workspace: impl Into<PathBuf>) -> Result<Arc<ToolRegistry>, Too
 ///
 /// Extends the writeable set with web search (if the backend is available)
 /// and memory read/write tools.
-pub fn all_tool_registry(
-    workspace: impl Into<PathBuf>,
-) -> Result<ToolRegistry, ToolsError> {
+pub fn all_tool_registry(workspace: impl Into<PathBuf>) -> Result<ToolRegistry, ToolsError> {
     let workspace = workspace.into();
     let mut registry = writeable_tool_registry(workspace.clone())?;
 

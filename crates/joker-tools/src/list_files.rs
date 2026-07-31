@@ -8,7 +8,7 @@ use joker::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::workspace::{parse_args, WorkspaceTool};
+use crate::workspace::{WorkspaceTool, parse_args};
 
 #[derive(Debug, Deserialize)]
 struct PathArgs {
@@ -75,8 +75,7 @@ impl Tool for ListFilesTool {
                     .max_depth(None);
                 let mut items = Vec::new();
                 for result in walk.build() {
-                    let entry =
-                        result.map_err(|error| ToolError::Execution(error.to_string()))?;
+                    let entry = result.map_err(|error| ToolError::Execution(error.to_string()))?;
                     let relative = entry
                         .path()
                         .strip_prefix(&root)
@@ -85,13 +84,7 @@ impl Tool for ListFilesTool {
                         .to_string();
                     let kind = entry
                         .file_type()
-                        .map(|ft| {
-                            if ft.is_dir() {
-                                "dir"
-                            } else {
-                                "file"
-                            }
-                        })
+                        .map(|ft| if ft.is_dir() { "dir" } else { "file" })
                         .unwrap_or("file");
                     items.push(json!({
                         "name": relative,

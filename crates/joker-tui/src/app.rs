@@ -6,11 +6,11 @@
 //! loop in [`crate::terminal::run_tui`] dispatches those actions and feeds
 //! [`UiEvent`]s back through [`App::apply_ui_event`].
 
-use std::sync::Arc;
-use std::fmt;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use joker::SharedApprovalChannel;
 use joker_config::RuntimeConfig;
+use std::fmt;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::event::UiEvent;
@@ -131,11 +131,23 @@ impl fmt::Debug for App {
             .field("runtime_config", &self.runtime_config)
             .field("dialog", &self.dialog)
             .field("approval_channel", &self.approval_channel)
-            .field("session_store", &self.session_store.as_ref().map(|_| "SessionStore"))
-            .field("loaded_conversation", &self.loaded_conversation.as_ref().map(|c| c.messages().len()))
+            .field(
+                "session_store",
+                &self.session_store.as_ref().map(|_| "SessionStore"),
+            )
+            .field(
+                "loaded_conversation",
+                &self
+                    .loaded_conversation
+                    .as_ref()
+                    .map(|c| c.messages().len()),
+            )
             .field("compact_requested", &self.compact_requested)
             .field("credential_store", &self.credential_store.list())
-            .field("api_key_input", &self.api_key_input.as_ref().map(|(p, _)| p.as_str()))
+            .field(
+                "api_key_input",
+                &self.api_key_input.as_ref().map(|(p, _)| p.as_str()),
+            )
             .field("available_models", &self.available_models)
             .field("active_agent", &self.active_agent)
             .field("agent_names", &self.agent_names)
@@ -193,7 +205,10 @@ impl App {
                 KeyCode::Enter => {
                     let key_value = buffer.clone();
                     let provider = self.api_key_input.take().unwrap().0;
-                    Some(AppAction::ApiKeyConfirm { provider_id: provider, api_key: key_value })
+                    Some(AppAction::ApiKeyConfirm {
+                        provider_id: provider,
+                        api_key: key_value,
+                    })
                 }
                 KeyCode::Esc => {
                     self.api_key_input = None;
@@ -325,14 +340,25 @@ impl App {
         let DialogKind::AgentNew { step } = dialog.kind else {
             return None;
         };
-        let state = self.agent_new_state.get_or_insert_with(AgentNewState::default);
+        let state = self
+            .agent_new_state
+            .get_or_insert_with(AgentNewState::default);
 
         // All tools available for permission assignment
         let tool_names: Vec<&str> = vec![
-            "list_files", "read_file", "grep", "glob",
-            "write_file", "edit_file", "apply_patch", "shell",
+            "list_files",
+            "read_file",
+            "grep",
+            "glob",
+            "write_file",
+            "edit_file",
+            "apply_patch",
+            "shell",
             "todo_write",
-            "web_search", "fetch_url", "memory_read", "memory_write",
+            "web_search",
+            "fetch_url",
+            "memory_read",
+            "memory_write",
         ];
 
         match step {
@@ -619,10 +645,7 @@ impl App {
             // Reference: pi's session tree model with branch/fork entries.
             let id = format!("{}-{:04x}", now, rand_u16());
             let parent_id = self.loaded_session_id.clone();
-            let root_id = self
-                .loaded_root_id
-                .clone()
-                .unwrap_or_else(|| id.clone());
+            let root_id = self.loaded_root_id.clone().unwrap_or_else(|| id.clone());
             let agent_name = self.active_agent.clone();
             let data = joker::SessionData {
                 id: id.clone(),
@@ -683,9 +706,7 @@ impl App {
 
             // ── Tool lifecycle ─────────────────────────────────────
             joker::Event::ToolDispatch {
-                call_id,
-                tool_name,
-                ..
+                call_id, tool_name, ..
             } => {
                 self.status = format!("Tool {tool_name} dispatched");
                 self.transcript.push(TranscriptItem::Tool {
@@ -745,7 +766,8 @@ impl App {
                 output_tokens,
                 cache_hit_tokens,
             } => {
-                self.status = format!("Tokens: {input_tokens}↑ {output_tokens}↓ cache:{cache_hit_tokens}");
+                self.status =
+                    format!("Tokens: {input_tokens}↑ {output_tokens}↓ cache:{cache_hit_tokens}");
                 self.transcript.push(TranscriptItem::Status(format!(
                     "Usage: {input_tokens} in / {output_tokens} out (cache hit: {cache_hit_tokens})"
                 )));
@@ -834,8 +856,9 @@ impl App {
                 recoverable,
             } => {
                 let level = if recoverable { "Warning" } else { "Error" };
-                self.transcript
-                    .push(TranscriptItem::Status(format!("{level} [{kind}]: {message}")));
+                self.transcript.push(TranscriptItem::Status(format!(
+                    "{level} [{kind}]: {message}"
+                )));
             }
             joker::Event::Retrying {
                 attempt,

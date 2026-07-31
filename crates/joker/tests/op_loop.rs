@@ -22,7 +22,26 @@ async fn agent_runtime_basic_run() {
     assert_eq!(outcome.stop_reason, StopReason::Stop);
 
     let events = observer.events();
-    assert!(matches!(events.last(), Some(joker::Event::RunFinished { .. })));
+    assert!(matches!(
+        events.last(),
+        Some(joker::Event::RunFinished { .. })
+    ));
+}
+
+#[tokio::test]
+async fn agent_runtime_preserves_final_model_stop_reason() {
+    let model = Arc::new(ScriptedModel::new([ScriptedStep::message(
+        vec![joker::Content::text("truncated")],
+        StopReason::Length,
+    )])) as Arc<dyn joker::Model>;
+    let agent = Agent::new(model);
+    let runtime = AgentRuntime::new(agent);
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let _tx = tx;
+
+    let outcome = runtime.run(RunRequest::new("hi"), &mut rx).await.unwrap();
+    assert_eq!(outcome.stop_reason, StopReason::Length);
 }
 
 #[tokio::test]
@@ -42,9 +61,7 @@ async fn op_cancel_stops_run() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
 
-    let handle = tokio::spawn(async move {
-        runtime.run(request, &mut rx).await
-    });
+    let handle = tokio::spawn(async move { runtime.run(request, &mut rx).await });
 
     // Send Cancel via Op. Between turns the AgentRuntime will process it.
     let _ = tx.send(Op::Cancel);
@@ -66,9 +83,7 @@ async fn op_shutdown_stops_run() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
 
-    let handle = tokio::spawn(async move {
-        runtime.run(RunRequest::new("test"), &mut rx).await
-    });
+    let handle = tokio::spawn(async move { runtime.run(RunRequest::new("test"), &mut rx).await });
 
     let _ = tx.send(Op::Shutdown);
     drop(tx);
@@ -89,9 +104,7 @@ async fn op_compact_emits_compaction_events() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
 
-    let handle = tokio::spawn(async move {
-        runtime.run(RunRequest::new("test"), &mut rx).await
-    });
+    let handle = tokio::spawn(async move { runtime.run(RunRequest::new("test"), &mut rx).await });
 
     let _ = tx.send(Op::Compact);
     drop(tx);
@@ -121,9 +134,7 @@ async fn op_switch_agent_emits_agent_switched() {
 
     let (tx, mut rx) = mpsc::unbounded_channel();
 
-    let handle = tokio::spawn(async move {
-        runtime.run(RunRequest::new("test"), &mut rx).await
-    });
+    let handle = tokio::spawn(async move { runtime.run(RunRequest::new("test"), &mut rx).await });
 
     let _ = tx.send(Op::SwitchAgent {
         name: "plan".into(),
@@ -133,9 +144,9 @@ async fn op_switch_agent_emits_agent_switched() {
     let _ = handle.await.unwrap();
 
     let events = observer.events();
-    let switched = events.iter().any(|e| {
-        matches!(e, joker::Event::AgentSwitched { to, .. } if to == "plan")
-    });
+    let switched = events
+        .iter()
+        .any(|e| matches!(e, joker::Event::AgentSwitched { to, .. } if to == "plan"));
     assert!(switched, "should emit AgentSwitched to 'plan'");
 }
 
@@ -151,5 +162,8 @@ async fn old_agent_run_api_still_works() {
 
     let events = observer.events();
     assert!(matches!(events[0], joker::Event::RunStarted));
-    assert!(matches!(events.last(), Some(joker::Event::RunFinished { .. })));
+    assert!(matches!(
+        events.last(),
+        Some(joker::Event::RunFinished { .. })
+    ));
 }

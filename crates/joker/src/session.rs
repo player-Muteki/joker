@@ -6,8 +6,10 @@
 //! `{id}.jsonl` with an `index.json` for fast metadata lookups.
 
 use std::{
+    collections::HashSet,
     fs,
     path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -16,6 +18,8 @@ use thiserror::Error;
 use tracing::{debug, error, info};
 
 use crate::{Conversation, error::BoxFutureResult};
+
+static SESSION_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Future type returned by [`SessionStore::save`] and [`SessionStore::delete`].
 pub type SessionFuture<'a> = BoxFutureResult<'a, (), SessionError>;
@@ -39,7 +43,13 @@ pub trait SessionStore: Send + Sync {
 
     /// Fork: create a new session that shares the parent's message history
     /// up to the fork point. Returns the new child session's data.
-    fn fork(&self, parent_id: &str, label: String, agent_name: String, model: String) -> SessionLoadFuture<'_>;
+    fn fork(
+        &self,
+        parent_id: &str,
+        label: String,
+        agent_name: String,
+        model: String,
+    ) -> SessionLoadFuture<'_>;
 
     /// Load the full tree path from a leaf session back to the root.
     /// Returns sessions ordered root → leaf.
@@ -140,8 +150,7 @@ impl JsonlSessionStore {
     fn save_index(&self, sessions: &[SessionInfo]) -> Result<(), SessionError> {
         let json = serde_json::to_string_pretty(sessions)
             .map_err(|e| SessionError::Serde(e.to_string()))?;
-        fs::write(self.meta_path(), json)
-            .map_err(|e| SessionError::Io(e.to_string()))?;
+        fs::write(self.meta_path(), json).map_err(|e| SessionError::Io(e.to_string()))?;
         Ok(())
     }
 
@@ -150,6 +159,30 @@ impl JsonlSessionStore {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
+    }
+
+    fn unique_fork_id(parent_id: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let sequence = SESSION_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        format!("fork-{parent_id}-{nanos}-{}-{sequence}", std::process::id())
+    }
+
+    fn descendant_ids(index: &[SessionInfo], session_id: &str) -> Vec<String> {
+        let mut descendants = Vec::new();
+        let mut stack = vec![session_id.to_string()];
+        while let Some(parent_id) = stack.pop() {
+            for child in index
+                .iter()
+                .filter(|s| s.parent_id.as_deref() == Some(&parent_id))
+            {
+                descendants.push(child.id.clone());
+                stack.push(child.id.clone());
+            }
+        }
+        descendants
     }
 }
 
@@ -179,7 +212,8 @@ impl SessionStore for JsonlSessionStore {
             })?);
 
             for msg in data.conversation.messages() {
-                let line = serde_json::to_string(msg).map_err(|e| SessionError::Serde(e.to_string()))?;
+                let line =
+                    serde_json::to_string(msg).map_err(|e| SessionError::Serde(e.to_string()))?;
                 lines.push(line);
             }
 
@@ -247,9 +281,20 @@ impl SessionStore for JsonlSessionStore {
             let label = header["label"].as_str().unwrap_or("").to_string();
             let created_at = header["created_at"].as_u64().unwrap_or(0);
             let model = header["model"].as_str().unwrap_or("").to_string();
-            let agent_name = header.get("agent_name").and_then(|v| v.as_str()).unwrap_or("default").to_string();
-            let parent_id = header.get("parent_id").and_then(|v| v.as_str()).map(String::from);
-            let root_id = header.get("root_id").and_then(|v| v.as_str()).unwrap_or(&id_copy).to_string();
+            let agent_name = header
+                .get("agent_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("default")
+                .to_string();
+            let parent_id = header
+                .get("parent_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let root_id = header
+                .get("root_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&id_copy)
+                .to_string();
 
             let mut conversation = Conversation::new();
             for line in lines {
@@ -297,20 +342,17 @@ impl SessionStore for JsonlSessionStore {
 
     fn delete(&self, id: &str) -> SessionFuture<'_> {
         let id = id.to_string();
-        let path = self.path_for(&id);
         Box::pin(async move {
             info!(target: "session", session_id = %id, "deleting session");
-            let _ = fs::remove_file(&path);
             let mut index = self.load_index();
-            index.retain(|s| s.id != id);
-            let children: Vec<String> = index.iter()
-                .filter(|s| s.parent_id.as_deref() == Some(&id))
-                .map(|s| s.id.clone())
-                .collect();
-            for child_id in children {
-                let _ = fs::remove_file(self.path_for(&child_id));
+            let mut delete_ids = Self::descendant_ids(&index, &id);
+            delete_ids.push(id.clone());
+            let delete_set: HashSet<String> = delete_ids.iter().cloned().collect();
+
+            for session_id in &delete_ids {
+                let _ = fs::remove_file(self.path_for(session_id));
             }
-            index.retain(|s| s.parent_id.as_deref() != Some(&id));
+            index.retain(|s| !delete_set.contains(&s.id));
             self.save_index(&index).map_err(|e| {
                 error!(target: "session", session_id = %id, error = %e, "failed to save index after deletion");
                 e
@@ -321,9 +363,15 @@ impl SessionStore for JsonlSessionStore {
 
     // ── Tree / Fork ─────────────────────────────────────────────────────
 
-    fn fork(&self, parent_id: &str, label: String, agent_name: String, model: String) -> SessionLoadFuture<'_> {
+    fn fork(
+        &self,
+        parent_id: &str,
+        label: String,
+        agent_name: String,
+        model: String,
+    ) -> SessionLoadFuture<'_> {
         let parent_id = parent_id.to_string();
-        let id = format!("fork-{}-{}", parent_id, Self::now());
+        let id = Self::unique_fork_id(&parent_id);
         info!(target: "session", parent_id = %parent_id, child_id = %id, "forking session");
         Box::pin(async move {
             let parent = self.load(&parent_id).await?
@@ -333,7 +381,11 @@ impl SessionStore for JsonlSessionStore {
                 })?;
 
             // Determine root_id: use parent's root_id or parent's own id
-            let root_id = if parent.root_id.is_empty() { parent_id.clone() } else { parent.root_id.clone() };
+            let root_id = if parent.root_id.is_empty() {
+                parent_id.clone()
+            } else {
+                parent.root_id.clone()
+            };
 
             let child = SessionData {
                 id,
@@ -376,7 +428,8 @@ impl SessionStore for JsonlSessionStore {
         let session_id = session_id.to_string();
         let index = self.load_index();
         Box::pin(async move {
-            let children: Vec<SessionInfo> = index.into_iter()
+            let children: Vec<SessionInfo> = index
+                .into_iter()
                 .filter(|s| s.parent_id.as_deref() == Some(&session_id))
                 .collect();
             Ok(children)
@@ -416,13 +469,20 @@ mod tests {
             let path = std::env::temp_dir().join(format!("joker-session-{id}-{name}"));
             let _ = fs::remove_dir_all(&path);
             fs::create_dir_all(&path).unwrap();
-            Self { path, _name: name.to_string() }
+            Self {
+                path,
+                _name: name.to_string(),
+            }
         }
-        fn path(&self) -> PathBuf { self.path.clone() }
+        fn path(&self) -> PathBuf {
+            self.path.clone()
+        }
     }
 
     impl Drop for TempDir {
-        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.path); }
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 
     fn test_store(name: &str) -> (TempDir, JsonlSessionStore) {
@@ -438,10 +498,14 @@ mod tests {
         conv.push(Message::user("hello"));
         conv.push(Message::assistant(vec![crate::Content::text("world")]));
         let data = SessionData {
-            id: "s1".into(), label: "Test".into(),
-            created_at: 1000, updated_at: 1000,
-            model: "m".into(), agent_name: "build".into(),
-            parent_id: None, root_id: "s1".into(),
+            id: "s1".into(),
+            label: "Test".into(),
+            created_at: 1000,
+            updated_at: 1000,
+            model: "m".into(),
+            agent_name: "build".into(),
+            parent_id: None,
+            root_id: "s1".into(),
             conversation: conv,
         };
         store.save(data).await.unwrap();
@@ -456,10 +520,14 @@ mod tests {
         let mut conv = Conversation::new();
         conv.push(Message::user("test"));
         let data = SessionData {
-            id: "l1".into(), label: "L".into(),
-            created_at: 1000, updated_at: 1000,
-            model: "m".into(), agent_name: "build".into(),
-            parent_id: None, root_id: "l1".into(),
+            id: "l1".into(),
+            label: "L".into(),
+            created_at: 1000,
+            updated_at: 1000,
+            model: "m".into(),
+            agent_name: "build".into(),
+            parent_id: None,
+            root_id: "l1".into(),
             conversation: conv,
         };
         store.save(data).await.unwrap();
@@ -473,10 +541,14 @@ mod tests {
         let mut conv = Conversation::new();
         conv.push(Message::user("delete me"));
         let data = SessionData {
-            id: "d1".into(), label: "D".into(),
-            created_at: 1000, updated_at: 1000,
-            model: "m".into(), agent_name: "build".into(),
-            parent_id: None, root_id: "d1".into(),
+            id: "d1".into(),
+            label: "D".into(),
+            created_at: 1000,
+            updated_at: 1000,
+            model: "m".into(),
+            agent_name: "build".into(),
+            parent_id: None,
+            root_id: "d1".into(),
             conversation: conv,
         };
         store.save(data).await.unwrap();
@@ -490,16 +562,24 @@ mod tests {
         let mut conv = Conversation::new();
         conv.push(Message::user("root message"));
         let root_data = SessionData {
-            id: "root1".into(), label: "Root".into(),
-            created_at: 1000, updated_at: 1000,
-            model: "m".into(), agent_name: "build".into(),
-            parent_id: None, root_id: "root1".into(),
+            id: "root1".into(),
+            label: "Root".into(),
+            created_at: 1000,
+            updated_at: 1000,
+            model: "m".into(),
+            agent_name: "build".into(),
+            parent_id: None,
+            root_id: "root1".into(),
             conversation: conv,
         };
         store.save(root_data).await.unwrap();
 
         // Fork
-        let forked = store.fork("root1", "Fork 1".into(), "plan".into(), "m".into()).await.unwrap().unwrap();
+        let forked = store
+            .fork("root1", "Fork 1".into(), "plan".into(), "m".into())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(forked.parent_id, Some("root1".into()));
         assert_eq!(forked.root_id, "root1");
         assert_eq!(forked.conversation.messages().len(), 1);
@@ -514,5 +594,72 @@ mod tests {
         let children = store.children("root1").await.unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].id, forked.id);
+    }
+
+    #[tokio::test]
+    async fn fork_creates_unique_session_ids_for_rapid_forks() {
+        let (_dir, store) = test_store("fork-unique");
+        let mut conv = Conversation::new();
+        conv.push(Message::user("root message"));
+        let root_data = SessionData {
+            id: "root-unique".into(),
+            label: "Root".into(),
+            created_at: 1000,
+            updated_at: 1000,
+            model: "m".into(),
+            agent_name: "build".into(),
+            parent_id: None,
+            root_id: "root-unique".into(),
+            conversation: conv,
+        };
+        store.save(root_data).await.unwrap();
+
+        let first = store
+            .fork("root-unique", "Fork 1".into(), "plan".into(), "m".into())
+            .await
+            .unwrap()
+            .unwrap();
+        let second = store
+            .fork("root-unique", "Fork 2".into(), "plan".into(), "m".into())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(first.id, second.id);
+        assert_eq!(store.children("root-unique").await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn delete_removes_entire_descendant_tree() {
+        let (_dir, store) = test_store("delete-tree");
+        let mut conv = Conversation::new();
+        conv.push(Message::user("root message"));
+        for (id, parent_id) in [
+            ("root-tree", None),
+            ("child-tree", Some("root-tree")),
+            ("grandchild-tree", Some("child-tree")),
+        ] {
+            store
+                .save(SessionData {
+                    id: id.into(),
+                    label: id.into(),
+                    created_at: 1000,
+                    updated_at: 1000,
+                    model: "m".into(),
+                    agent_name: "build".into(),
+                    parent_id: parent_id.map(String::from),
+                    root_id: "root-tree".into(),
+                    conversation: conv.clone(),
+                })
+                .await
+                .unwrap();
+        }
+
+        store.delete("root-tree").await.unwrap();
+
+        assert!(store.load("root-tree").await.unwrap().is_none());
+        assert!(store.load("child-tree").await.unwrap().is_none());
+        assert!(store.load("grandchild-tree").await.unwrap().is_none());
+        assert!(store.list().await.unwrap().is_empty());
     }
 }

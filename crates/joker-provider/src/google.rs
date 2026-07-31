@@ -390,8 +390,8 @@ impl GeminiSseParser {
     }
 
     fn parse_chunk(&mut self, json_str: &str) -> Result<Option<ParsedEvent>, String> {
-        let response: GeminiResponse =
-            serde_json::from_str(json_str).map_err(|e| format!("invalid Gemini JSON: {e}: {json_str}"))?;
+        let response: GeminiResponse = serde_json::from_str(json_str)
+            .map_err(|e| format!("invalid Gemini JSON: {e}: {json_str}"))?;
 
         // Check for error
         if let Some(err) = &response.error {
@@ -414,34 +414,34 @@ impl GeminiSseParser {
 
         // Process parts
         if let Some(content) = &candidate.content
-            && let Some(parts) = &content.parts {
-                for part in parts {
-                    if let Some(text) = &part.text
-                        && !text.is_empty() {
-                            if part.thought.unwrap_or(false) {
-                                events.push(ParsedEvent::Event(ModelResponseEvent::ReasoningDelta(
-                                    text.clone(),
-                                )));
-                            } else {
-                                events.push(ParsedEvent::Event(ModelResponseEvent::TextDelta(
-                                    text.clone(),
-                                )));
-                            }
-                        }
-
-                    if let Some(fc) = &part.function_call {
-                        let name = fc.name.clone().unwrap_or_default();
-                        let args = fc.args.clone().unwrap_or(Value::Null);
-                        events.push(ParsedEvent::Event(ModelResponseEvent::ToolCall(
-                            ToolCall {
-                                id: format!("fc_{}", name),
-                                name,
-                                arguments: args,
-                            },
+            && let Some(parts) = &content.parts
+        {
+            for part in parts {
+                if let Some(text) = &part.text
+                    && !text.is_empty()
+                {
+                    if part.thought.unwrap_or(false) {
+                        events.push(ParsedEvent::Event(ModelResponseEvent::ReasoningDelta(
+                            text.clone(),
+                        )));
+                    } else {
+                        events.push(ParsedEvent::Event(ModelResponseEvent::TextDelta(
+                            text.clone(),
                         )));
                     }
                 }
+
+                if let Some(fc) = &part.function_call {
+                    let name = fc.name.clone().unwrap_or_default();
+                    let args = fc.args.clone().unwrap_or(Value::Null);
+                    events.push(ParsedEvent::Event(ModelResponseEvent::ToolCall(ToolCall {
+                        id: format!("fc_{}", name),
+                        name,
+                        arguments: args,
+                    })));
+                }
             }
+        }
 
         // Check finish reason
         if let Some(finish_reason) = &candidate.finish_reason {
@@ -565,9 +565,9 @@ mod tests {
         let mut parser = GeminiSseParser::new();
         let events = parser.push("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}]}\n\n");
 
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, ParsedEvent::Event(ModelResponseEvent::TextDelta(t)) if t == "Hello")));
+        assert!(events.iter().any(
+            |e| matches!(e, ParsedEvent::Event(ModelResponseEvent::TextDelta(t)) if t == "Hello")
+        ));
     }
 
     #[test]

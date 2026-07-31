@@ -38,7 +38,10 @@ async fn main() {
             .await
             .expect("fork session")
             .expect("forked session exists");
-        println!("forked session: id={}, parent={:?}", fork.id, fork.parent_id);
+        println!(
+            "forked session: id={}, parent={:?}",
+            fork.id, fork.parent_id
+        );
     }
 
     let sessions = store.list().await.expect("list sessions");

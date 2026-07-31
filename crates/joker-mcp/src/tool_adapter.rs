@@ -39,10 +39,7 @@ pub struct McpToolAdapter {
 impl McpToolAdapter {
     /// Create a new adapter for a single MCP tool.
     #[must_use]
-    pub fn new(
-        tool_def: &crate::protocol::McpToolDef,
-        client: Arc<Mutex<McpClient>>,
-    ) -> Self {
+    pub fn new(tool_def: &crate::protocol::McpToolDef, client: Arc<Mutex<McpClient>>) -> Self {
         Self {
             name: ToolName::new(format!("mcp_{}", tool_def.name)),
             description: tool_def
@@ -93,7 +90,10 @@ impl Tool for McpToolAdapter {
             };
 
             let mut client = self.client.lock().await;
-            match client.call_tool(&self.name.as_str().replace("mcp_", ""), arguments).await {
+            match client
+                .call_tool(&self.name.as_str().replace("mcp_", ""), arguments)
+                .await
+            {
                 Ok(result) => {
                     let output_text: String = result
                         .content
@@ -121,13 +121,7 @@ impl Tool for McpToolAdapter {
 /// client handle (for lifecycle management) and a list of tool adapters.
 pub async fn connect_and_discover(
     config: &McpToolConfig,
-) -> Result<
-    (
-        Arc<Mutex<McpClient>>,
-        Vec<McpToolAdapter>,
-    ),
-    McpError,
-> {
+) -> Result<(Arc<Mutex<McpClient>>, Vec<McpToolAdapter>), McpError> {
     let transport = crate::transport::StdioTransport::spawn(&config.command, &config.args)
         .await
         .map_err(McpError::Transport)?;

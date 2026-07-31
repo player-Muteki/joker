@@ -1,4 +1,4 @@
-use criterion::{Criterion, BatchSize, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use joker::{
     ToolAnnotations, ToolDefinition, ToolExecution, ToolFn, ToolFuture, ToolInvocation, ToolName,
     ToolOutput, ToolRegistry,

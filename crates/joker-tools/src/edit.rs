@@ -9,7 +9,7 @@ use joker::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::workspace::{parse_args, WorkspaceTool};
+use crate::workspace::{WorkspaceTool, parse_args};
 
 const SINGLE_CANDIDATE_SIMILARITY_THRESHOLD: f64 = 0.65;
 const MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD: f64 = 0.65;
@@ -18,6 +18,22 @@ type Generator = Box<dyn Iterator<Item = String>>;
 
 trait Replacer: Send + Sync {
     fn generate(&self, content: &str, find: &str) -> Generator;
+}
+
+fn byte_offset_for_line(lines: &[&str], line: usize) -> usize {
+    lines.iter().take(line).map(|line| line.len() + 1).sum()
+}
+
+fn byte_end_for_line_range(lines: &[&str], start: usize, end: usize) -> usize {
+    let start_idx = byte_offset_for_line(lines, start);
+    start_idx
+        + lines
+            .iter()
+            .enumerate()
+            .take(end + 1)
+            .skip(start)
+            .map(|(index, line)| line.len() + usize::from(index < end))
+            .sum::<usize>()
 }
 
 struct SimpleReplacer;
@@ -32,7 +48,7 @@ impl Replacer for LineTrimmedReplacer {
     fn generate(&self, content: &str, find: &str) -> Generator {
         let original_lines: Vec<&str> = content.split('\n').collect();
         let mut search_lines: Vec<&str> = find.split('\n').collect();
-        if search_lines.last().map_or(false, |l| l.is_empty()) {
+        if search_lines.last().is_some_and(|l| l.is_empty()) {
             search_lines.pop();
         }
         let search_len = search_lines.len();
@@ -49,17 +65,8 @@ impl Replacer for LineTrimmedReplacer {
             if !matches {
                 continue;
             }
-            let mut start = 0usize;
-            for k in 0..i {
-                start += original_lines[k].len() + 1;
-            }
-            let mut end = start;
-            for k in 0..search_len {
-                end += original_lines[i + k].len();
-                if k < search_len - 1 {
-                    end += 1;
-                }
-            }
+            let start = byte_offset_for_line(&original_lines, i);
+            let end = byte_end_for_line_range(&original_lines, i, i + search_len - 1);
             results.push(content[start..end].to_string());
         }
         Box::new(results.into_iter())
@@ -73,17 +80,21 @@ fn levenshtein(a: &str, b: &str) -> usize {
     let a_len = a.len();
     let b_len = b.len();
     let mut matrix = vec![vec![0usize; b_len + 1]; a_len + 1];
-    for i in 0..=a_len {
-        matrix[i][0] = i;
+    for (i, row) in matrix.iter_mut().enumerate().take(a_len + 1) {
+        row[0] = i;
     }
-    for j in 0..=b_len {
-        matrix[0][j] = j;
+    for (j, cell) in matrix[0].iter_mut().enumerate().take(b_len + 1) {
+        *cell = j;
     }
     let a_bytes = a.as_bytes();
     let b_bytes = b.as_bytes();
     for i in 1..=a_len {
         for j in 1..=b_len {
-            let cost = if a_bytes[i - 1] == b_bytes[j - 1] { 0 } else { 1 };
+            let cost = if a_bytes[i - 1] == b_bytes[j - 1] {
+                0
+            } else {
+                1
+            };
             matrix[i][j] = (matrix[i - 1][j] + 1)
                 .min(matrix[i][j - 1] + 1)
                 .min(matrix[i - 1][j - 1] + cost);
@@ -97,7 +108,7 @@ impl Replacer for BlockAnchorReplacer {
     fn generate(&self, content: &str, find: &str) -> Generator {
         let original_lines: Vec<&str> = content.split('\n').collect();
         let mut search_lines: Vec<&str> = find.split('\n').collect();
-        if search_lines.last().map_or(false, |l| l.is_empty()) {
+        if search_lines.last().is_some_and(|l| l.is_empty()) {
             search_lines.pop();
         }
         if search_lines.len() < 3 {
@@ -109,15 +120,18 @@ impl Replacer for BlockAnchorReplacer {
         let search_size = search_lines.len();
         let max_delta = (search_size as f64 * 0.25).ceil() as usize;
 
-        struct Candidate { start: usize, end: usize }
+        struct Candidate {
+            start: usize,
+            end: usize,
+        }
 
         let mut candidates = Vec::new();
-        for i in 0..original_lines.len() {
-            if original_lines[i].trim() != first_search {
+        for (i, original_line) in original_lines.iter().enumerate() {
+            if original_line.trim() != first_search {
                 continue;
             }
-            for j in (i + 2)..original_lines.len() {
-                if original_lines[j].trim() == last_search {
+            for (j, candidate_line) in original_lines.iter().enumerate().skip(i + 2) {
+                if candidate_line.trim() == last_search {
                     let block_size = j - i + 1;
                     if block_size.abs_diff(search_size) <= max_delta {
                         candidates.push(Candidate { start: i, end: j });
@@ -157,17 +171,8 @@ impl Replacer for BlockAnchorReplacer {
                 similarity = 1.0;
             }
             if similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD {
-                let mut start_idx = 0usize;
-                for k in 0..c.start {
-                    start_idx += original_lines[k].len() + 1;
-                }
-                let mut end_idx = start_idx;
-                for k in c.start..=c.end {
-                    end_idx += original_lines[k].len();
-                    if k < c.end {
-                        end_idx += 1;
-                    }
-                }
+                let start_idx = byte_offset_for_line(&original_lines, c.start);
+                let end_idx = byte_end_for_line_range(&original_lines, c.start, c.end);
                 results.push(content[start_idx..end_idx].to_string());
             }
             return Box::new(results.into_iter());
@@ -201,21 +206,12 @@ impl Replacer for BlockAnchorReplacer {
             }
         }
 
-        if max_sim >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD {
-            if let Some((start_line, end_line)) = best {
-                let mut start_idx = 0usize;
-                for k in 0..start_line {
-                    start_idx += original_lines[k].len() + 1;
-                }
-                let mut end_idx = start_idx;
-                for k in start_line..=end_line {
-                    end_idx += original_lines[k].len();
-                    if k < end_line {
-                        end_idx += 1;
-                    }
-                }
-                results.push(content[start_idx..end_idx].to_string());
-            }
+        if max_sim >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD
+            && let Some((start_line, end_line)) = best
+        {
+            let start_idx = byte_offset_for_line(&original_lines, start_line);
+            let end_idx = byte_end_for_line_range(&original_lines, start_line, end_line);
+            results.push(content[start_idx..end_idx].to_string());
         }
         Box::new(results.into_iter())
     }
@@ -229,7 +225,9 @@ impl Replacer for WhitespaceNormalizedReplacer {
             let mut prev_was_space = false;
             out.retain(|c| {
                 if c.is_ascii_whitespace() {
-                    if prev_was_space { return false; }
+                    if prev_was_space {
+                        return false;
+                    }
                     prev_was_space = true;
                     true
                 } else {
@@ -255,10 +253,10 @@ impl Replacer for WhitespaceNormalizedReplacer {
                         .map(|w| regex::escape(w))
                         .collect::<Vec<_>>()
                         .join(r"\s+");
-                    if let Ok(re) = regex::Regex::new(&pattern) {
-                        if let Some(m) = re.find(line) {
-                            results.push(m.as_str().to_string());
-                        }
+                    if let Ok(re) = regex::Regex::new(&pattern)
+                        && let Some(m) = re.find(line)
+                    {
+                        results.push(m.as_str().to_string());
                     }
                 }
             }
@@ -376,7 +374,7 @@ struct ContextAwareReplacer;
 impl Replacer for ContextAwareReplacer {
     fn generate(&self, content: &str, find: &str) -> Generator {
         let mut search_lines: Vec<&str> = find.split('\n').collect();
-        if search_lines.last().map_or(false, |l| l.is_empty()) {
+        if search_lines.last().is_some_and(|l| l.is_empty()) {
             search_lines.pop();
         }
         if search_lines.len() < 3 {
@@ -453,7 +451,10 @@ fn unescape(s: &str) -> String {
                 Some('"') => out.push('"'),
                 Some('`') => out.push('`'),
                 Some('\\') => out.push('\\'),
-                Some(c) => { out.push('\\'); out.push(c); }
+                Some(c) => {
+                    out.push('\\');
+                    out.push(c);
+                }
                 None => out.push('\\'),
             }
         } else {
@@ -464,15 +465,42 @@ fn unescape(s: &str) -> String {
 }
 
 const REPLACERS: &[ReplacerEntry] = &[
-    ReplacerEntry { replacer: &SimpleReplacer, transform_new: None },
-    ReplacerEntry { replacer: &LineTrimmedReplacer, transform_new: None },
-    ReplacerEntry { replacer: &BlockAnchorReplacer, transform_new: None },
-    ReplacerEntry { replacer: &WhitespaceNormalizedReplacer, transform_new: None },
-    ReplacerEntry { replacer: &IndentationFlexibleReplacer, transform_new: None },
-    ReplacerEntry { replacer: &EscapeNormalizedReplacer, transform_new: Some(unescape) },
-    ReplacerEntry { replacer: &TrimmedBoundaryReplacer, transform_new: None },
-    ReplacerEntry { replacer: &ContextAwareReplacer, transform_new: None },
-    ReplacerEntry { replacer: &MultiOccurrenceReplacer, transform_new: None },
+    ReplacerEntry {
+        replacer: &SimpleReplacer,
+        transform_new: None,
+    },
+    ReplacerEntry {
+        replacer: &LineTrimmedReplacer,
+        transform_new: None,
+    },
+    ReplacerEntry {
+        replacer: &BlockAnchorReplacer,
+        transform_new: None,
+    },
+    ReplacerEntry {
+        replacer: &WhitespaceNormalizedReplacer,
+        transform_new: None,
+    },
+    ReplacerEntry {
+        replacer: &IndentationFlexibleReplacer,
+        transform_new: None,
+    },
+    ReplacerEntry {
+        replacer: &EscapeNormalizedReplacer,
+        transform_new: Some(unescape),
+    },
+    ReplacerEntry {
+        replacer: &TrimmedBoundaryReplacer,
+        transform_new: None,
+    },
+    ReplacerEntry {
+        replacer: &ContextAwareReplacer,
+        transform_new: None,
+    },
+    ReplacerEntry {
+        replacer: &MultiOccurrenceReplacer,
+        transform_new: None,
+    },
 ];
 
 fn is_disproportionate(search: &str, old: &str) -> bool {
@@ -484,10 +512,20 @@ fn is_disproportionate(search: &str, old: &str) -> bool {
     if old_lines == 1 {
         return false;
     }
-    search.trim().len() > old.trim().len().saturating_add(500).max(old.trim().len() * 4)
+    search.trim().len()
+        > old
+            .trim()
+            .len()
+            .saturating_add(500)
+            .max(old.trim().len() * 4)
 }
 
-fn replace_inner(content: &str, old_string: &str, new_string: &str, replace_all: bool) -> Result<String, String> {
+fn replace_inner(
+    content: &str,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+) -> Result<String, String> {
     if old_string == new_string {
         return Err("No changes to apply: oldString and newString are identical.".into());
     }
@@ -522,10 +560,10 @@ fn replace_inner(content: &str, old_string: &str, new_string: &str, replace_all:
                 return Ok(content.replace(&search, &effective_new));
             }
 
-            if let Some(last) = content.rfind(&search) {
-                if idx != last {
-                    continue;
-                }
+            if let Some(last) = content.rfind(&search)
+                && idx != last
+            {
+                continue;
             }
 
             let mut result = content[..idx].to_string();
@@ -556,7 +594,11 @@ fn normalize_line_endings_lossy(text: &str, ending: &str) -> String {
 }
 
 fn detect_line_ending(content: &str) -> &str {
-    if content.contains("\r\n") { "\r\n" } else { "\n" }
+    if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
 }
 
 /// Apply a text replacement in the file at `path`.
@@ -564,17 +606,27 @@ fn detect_line_ending(content: &str) -> &str {
 /// Supports fuzzy matching via multiple strategies (exact, line-trimmed,
 /// block-anchor, whitespace-normalized, indentation-flexible,
 /// escape-normalized, trimmed-boundary, context-aware).
-pub fn edit_file(path: &Path, old_string: &str, new_string: &str, replace_all: bool) -> Result<String, ToolError> {
-    let content = fs::read_to_string(path)
-        .map_err(|e| ToolError::Execution(format!("read failed: {e}")))?;
+pub fn edit_file(
+    path: &Path,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+) -> Result<String, ToolError> {
+    let content =
+        fs::read_to_string(path).map_err(|e| ToolError::Execution(format!("read failed: {e}")))?;
 
     let line_ending = detect_line_ending(&content);
     let normalized_content = content.replace("\r\n", "\n");
     let normalized_old = old_string.replace("\r\n", "\n");
     let normalized_new = new_string.replace("\r\n", "\n");
 
-    let result = replace_inner(&normalized_content, &normalized_old, &normalized_new, replace_all)
-        .map_err(ToolError::InvalidArguments)?;
+    let result = replace_inner(
+        &normalized_content,
+        &normalized_old,
+        &normalized_new,
+        replace_all,
+    )
+    .map_err(ToolError::InvalidArguments)?;
 
     let result_with_ending = normalize_line_endings_lossy(&result, line_ending);
 
@@ -619,13 +671,12 @@ impl Tool for EditFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: ToolName::new("edit_file"),
-            description:
-                "Replace text in a file with intelligent fuzzy matching. \
+            description: "Replace text in a file with intelligent fuzzy matching. \
                  Uses multiple strategies: exact match, line-trimmed comparison, \
                  block-anchor with Levenshtein similarity, whitespace-normalized, \
                  indentation-flexible, escape-normalized, trimmed-boundary, and \
                  context-aware matching. Use replace_all=true to replace all occurrences."
-                    .into(),
+                .into(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

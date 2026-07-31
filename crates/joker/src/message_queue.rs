@@ -19,7 +19,9 @@ impl PendingMessageQueue {
     /// Create an empty queue.
     #[must_use]
     pub fn new() -> Self {
-        Self { messages: std::sync::Mutex::new(Vec::new()) }
+        Self {
+            messages: std::sync::Mutex::new(Vec::new()),
+        }
     }
 
     /// Push a message onto the queue.
@@ -65,7 +67,9 @@ impl PendingMessageQueue {
 impl Clone for PendingMessageQueue {
     fn clone(&self) -> Self {
         let guard = self.messages.lock().unwrap();
-        Self { messages: std::sync::Mutex::new(guard.clone()) }
+        Self {
+            messages: std::sync::Mutex::new(guard.clone()),
+        }
     }
 }
 

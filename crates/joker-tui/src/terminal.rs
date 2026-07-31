@@ -56,17 +56,17 @@ pub async fn run_tui(options: TuiOptions) -> Result<(), TuiError> {
     let mut app = App::with_config(options.runtime_config.clone());
     let workspace = std::env::current_dir()?;
     let agents_dir = joker_home_dir().join("agents");
-    let mut driver = AgentDriver::new_with_agents_dir(
-        options.runtime_config.clone(),
-        workspace,
-        agents_dir,
-    );
+    let mut driver =
+        AgentDriver::new_with_agents_dir(options.runtime_config.clone(), workspace, agents_dir);
 
     // Connect to MCP servers configured in joker.toml
     driver.init_mcp_servers().await;
 
     // Set up session store in .joker/sessions/
-    let session_dir = std::env::current_dir().unwrap_or_default().join(".joker").join("sessions");
+    let session_dir = std::env::current_dir()
+        .unwrap_or_default()
+        .join(".joker")
+        .join("sessions");
     if let Ok(store) = joker::JsonlSessionStore::new(&session_dir) {
         app.session_store = Some(std::sync::Arc::new(store));
     }
@@ -184,13 +184,19 @@ fn handle_action(
         AppAction::DialogConfirm { kind, selection } => {
             handle_dialog_confirm(app, driver, kind, &selection, tx);
         }
-        AppAction::ApiKeyConfirm { provider_id, api_key } => {
+        AppAction::ApiKeyConfirm {
+            provider_id,
+            api_key,
+        } => {
             handle_api_key_confirm(app, driver, &provider_id, &api_key, tx);
         }
         AppAction::Cancel => app.cancel_running(),
         AppAction::Quit => app.quit(),
         AppAction::Redraw => {}
-        AppAction::AgentCreate { name, tool_permissions } => {
+        AppAction::AgentCreate {
+            name,
+            tool_permissions,
+        } => {
             handle_agent_create(app, driver, config_store, &name, &tool_permissions);
         }
     }
@@ -213,9 +219,11 @@ fn handle_api_key_confirm(
     }
 
     driver.set_runtime_config(app.runtime_config.clone());
-    app.transcript.push(crate::app::TranscriptItem::Status(
-        format!("API key stored. Switched to provider: {}", app.runtime_config.provider_label()),
-    ));
+    app.transcript
+        .push(crate::app::TranscriptItem::Status(format!(
+            "API key stored. Switched to provider: {}",
+            app.runtime_config.provider_label()
+        )));
     spawn_model_discovery(app, tx);
 }
 
@@ -226,8 +234,8 @@ fn handle_agent_create(
     name: &str,
     tool_permissions: &[(String, String)],
 ) {
-    use std::collections::{BTreeMap, HashMap};
     use joker::{AgentPermission, PermissionSetting, ToolName};
+    use std::collections::{BTreeMap, HashMap};
 
     let mut perms = HashMap::new();
     let mut file_tools = BTreeMap::new();
@@ -346,20 +354,22 @@ fn handle_dialog_confirm(
                     .push(TranscriptItem::Error(error.to_string()));
             }
         },
-        DialogKind::Model | DialogKind::ApiKeyInput { .. } => match app.runtime_config.switch_model(selection) {
-            Ok(()) => {
-                app.status = format!("Idle ({})", app.runtime_config.provider_label());
-                driver.set_runtime_config(app.runtime_config.clone());
-                app.transcript.push(TranscriptItem::Status(format!(
-                    "Switched model to {}",
-                    app.runtime_config.provider_label()
-                )));
+        DialogKind::Model | DialogKind::ApiKeyInput { .. } => {
+            match app.runtime_config.switch_model(selection) {
+                Ok(()) => {
+                    app.status = format!("Idle ({})", app.runtime_config.provider_label());
+                    driver.set_runtime_config(app.runtime_config.clone());
+                    app.transcript.push(TranscriptItem::Status(format!(
+                        "Switched model to {}",
+                        app.runtime_config.provider_label()
+                    )));
+                }
+                Err(error) => {
+                    app.transcript
+                        .push(TranscriptItem::Error(error.to_string()));
+                }
             }
-            Err(error) => {
-                app.transcript
-                    .push(TranscriptItem::Error(error.to_string()));
-            }
-        },
+        }
         DialogKind::AgentSwitch => {
             app.active_agent = selection.to_string();
             driver.set_active_agent(selection.to_string());
@@ -408,13 +418,14 @@ fn sync_provider_after_change(
         if let Some(api_key) = app.credential_store.get(&provider_id) {
             route.auth.credentials = CredentialSource::Value(api_key);
         } else if let CredentialSource::EnvVar(env_var) = &route.auth.credentials
-            && std::env::var(env_var).is_err() {
-                app.api_key_input = Some((provider_id.clone(), String::new()));
-                app.transcript.push(TranscriptItem::Status(format!(
-                    "Enter API key for {provider_id}."
-                )));
-                needs_api_key = true;
-            }
+            && std::env::var(env_var).is_err()
+        {
+            app.api_key_input = Some((provider_id.clone(), String::new()));
+            app.transcript.push(TranscriptItem::Status(format!(
+                "Enter API key for {provider_id}."
+            )));
+            needs_api_key = true;
+        }
     }
 
     driver.set_runtime_config(app.runtime_config.clone());

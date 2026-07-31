@@ -1,8 +1,4 @@
-use std::{
-    collections::HashMap,
-    fs,
-    path::{PathBuf},
-};
+use std::{collections::HashMap, fs, path::PathBuf};
 
 use thiserror::Error;
 use tracing::{debug, info};
@@ -57,9 +53,10 @@ impl CredentialStore {
         };
         if path.exists()
             && let Ok(data) = fs::read_to_string(&path)
-                && let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&data) {
-                    store.credentials = map;
-                }
+            && let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&data)
+        {
+            store.credentials = map;
+        }
         store
     }
 
@@ -120,13 +117,11 @@ impl CredentialStore {
     pub fn save(&self) -> Result<(), CredentialError> {
         if let Some(path) = &self.path {
             if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| CredentialError::Io(e.to_string()))?;
+                fs::create_dir_all(parent).map_err(|e| CredentialError::Io(e.to_string()))?;
             }
             let json = serde_json::to_string_pretty(&self.credentials)
                 .map_err(|e| CredentialError::Serde(e.to_string()))?;
-            fs::write(path, json)
-                .map_err(|e| CredentialError::Io(e.to_string()))?;
+            fs::write(path, json).map_err(|e| CredentialError::Io(e.to_string()))?;
             // Set 0o600 permissions on Unix
             #[cfg(unix)]
             {

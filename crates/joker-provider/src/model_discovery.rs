@@ -40,9 +40,10 @@ pub async fn discover_models(base_url: &str, auth: &Auth) -> Result<Vec<String>,
 
         match req.send().await {
             Ok(resp) if resp.status().is_success() => {
-                let body: ModelsResponse = resp.json().await.map_err(|e| {
-                    format!("failed to parse models response from {url}: {e}")
-                })?;
+                let body: ModelsResponse = resp
+                    .json()
+                    .await
+                    .map_err(|e| format!("failed to parse models response from {url}: {e}"))?;
                 return Ok(body.data.into_iter().map(|e| e.id).collect());
             }
             Ok(resp) if url == candidates.last().unwrap() => {
@@ -55,7 +56,9 @@ pub async fn discover_models(base_url: &str, auth: &Auth) -> Result<Vec<String>,
         }
     }
 
-    Err(format!("no candidate model URLs worked for base_url: {base_url}"))
+    Err(format!(
+        "no candidate model URLs worked for base_url: {base_url}"
+    ))
 }
 
 fn build_model_fetch_urls(base_url: &str) -> Vec<String> {
@@ -147,7 +150,9 @@ pub fn guess_auth(protocol: &Protocol) -> Auth {
     match protocol {
         Protocol::ChatCompletions => Auth::bearer_from_env("OPENAI_COMPATIBLE_API_KEY"),
         Protocol::AnthropicMessages => Auth::api_key_from_env("x-api-key", "ANTHROPIC_API_KEY"),
-        Protocol::GoogleGemini => Auth::api_key_from_env("x-goog-api-key", "GOOGLE_GENERATIVE_AI_API_KEY"),
+        Protocol::GoogleGemini => {
+            Auth::api_key_from_env("x-goog-api-key", "GOOGLE_GENERATIVE_AI_API_KEY")
+        }
     }
 }
 
@@ -179,21 +184,36 @@ mod tests {
     fn detect_vendor_identifies_known_providers() {
         assert_eq!(detect_vendor("https://api.deepseek.com"), "deepseek");
         assert_eq!(detect_vendor("https://api.anthropic.com/v1"), "anthropic");
-        assert_eq!(detect_vendor("https://generativelanguage.googleapis.com"), "google");
+        assert_eq!(
+            detect_vendor("https://generativelanguage.googleapis.com"),
+            "google"
+        );
         assert_eq!(detect_vendor("https://api.openai.com/v1"), "openai");
         assert_eq!(detect_vendor("https://api.groq.com/openai/v1"), "groq");
     }
 
     #[test]
     fn detect_vendor_unknown_default() {
-        assert_eq!(detect_vendor("https://my-custom-llm.example.com"), "unknown");
+        assert_eq!(
+            detect_vendor("https://my-custom-llm.example.com"),
+            "unknown"
+        );
     }
 
     #[test]
     fn guess_protocol_by_vendor() {
-        assert_eq!(guess_protocol("https://api.anthropic.com"), Protocol::AnthropicMessages);
-        assert_eq!(guess_protocol("https://generativelanguage.googleapis.com"), Protocol::GoogleGemini);
-        assert_eq!(guess_protocol("https://api.deepseek.com"), Protocol::ChatCompletions);
+        assert_eq!(
+            guess_protocol("https://api.anthropic.com"),
+            Protocol::AnthropicMessages
+        );
+        assert_eq!(
+            guess_protocol("https://generativelanguage.googleapis.com"),
+            Protocol::GoogleGemini
+        );
+        assert_eq!(
+            guess_protocol("https://api.deepseek.com"),
+            Protocol::ChatCompletions
+        );
     }
 
     #[test]

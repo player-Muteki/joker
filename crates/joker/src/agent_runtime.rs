@@ -6,8 +6,8 @@ use tokio::sync::mpsc;
 
 use crate::{
     Agent, ApprovalResponse, Event, Observer, RunError, RunOutcome, RunRequest, StopReason,
-    message_queue::{DrainMode, PendingMessageQueue},
     agent::RunGuard,
+    message_queue::{DrainMode, PendingMessageQueue},
 };
 
 /// Commands that can be sent to an active [`AgentRuntime`] run via the Op channel.
@@ -121,9 +121,9 @@ impl AgentRuntime {
             let mut steps = 0usize;
             let mut tool_calls = 0usize;
 
-            loop {
+            let final_stop_reason = loop {
                 tracing::debug!(target: "agent", steps, tool_calls, "turn iteration");
-                loop {
+                let turn_stop_reason = loop {
                     while let Ok(op) = rx_op.try_recv() {
                         match op {
                             Op::SendMessage { text } => {
@@ -191,7 +191,7 @@ impl AgentRuntime {
                         .await?;
 
                     if !outcome.has_tool_calls {
-                        break;
+                        break outcome.stop_reason;
                     }
 
                     if tool_calls + outcome.tool_calls_count > self.agent.config.limits.max_tool_calls {
@@ -204,18 +204,21 @@ impl AgentRuntime {
                         .execute_tool_calls(outcome.pending_tool_calls, &cancellation_token)
                         .await?;
                     request.conversation.push(crate::Message::tool(results));
-                }
+                };
 
                 let follow_ups = self.follow_up_queue.drain(DrainMode::All);
                 if follow_ups.is_empty() {
-                    break;
+                    break turn_stop_reason;
                 }
                 for msg in follow_ups {
                     request.conversation.push(crate::Message::user(msg));
                 }
-            }
+            };
 
-            Ok(RunOutcome { conversation: request.conversation, stop_reason: StopReason::Stop })
+            Ok(RunOutcome {
+                conversation: request.conversation,
+                stop_reason: final_stop_reason,
+            })
         }.await;
 
         match &result {

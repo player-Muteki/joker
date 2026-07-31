@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use joker::{Agent, AgentConfig, Event, RecordingObserver, RetryConfig, RunRequest, ScriptedModel, ScriptedStep, StopReason};
+use joker::{
+    Agent, AgentConfig, Event, RecordingObserver, RetryConfig, RunRequest, ScriptedModel,
+    ScriptedStep, StopReason,
+};
 
 #[tokio::test]
 async fn text_turn_event_order_is_stable() {

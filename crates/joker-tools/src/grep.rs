@@ -6,9 +6,9 @@ use joker::{
     ToolExecution, ToolFuture, ToolInvocation, ToolName, ToolOutput,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::workspace::{parse_args, WorkspaceTool};
+use crate::workspace::{WorkspaceTool, parse_args};
 
 #[derive(Debug, Deserialize)]
 struct GrepArgs {
@@ -109,7 +109,9 @@ async fn try_ripgrep(root: &Path, args: &GrepArgs) -> Result<Option<Vec<Value>>,
     let search_path = args.path.as_deref().unwrap_or(".");
     cmd.arg(&args.query).arg(search_path);
 
-    let output = cmd.output().await
+    let output = cmd
+        .output()
+        .await
         .map_err(|e| ToolError::Execution(format!("rg execution: {e}")))?;
 
     if !output.status.success() && !output.stderr.is_empty() {
@@ -150,10 +152,14 @@ fn grep_fallback(root: &Path, args: &GrepArgs) -> Result<Vec<Value>, ToolError> 
     let max_matches = args.max_matches.unwrap_or(50).min(200);
     let context_lines = args.context_lines.unwrap_or(0);
 
-    let include_glob = args.include.as_ref()
+    let include_glob = args
+        .include
+        .as_ref()
         .map(|p| ::glob::Pattern::new(p))
         .and_then(|r| r.ok());
-    let exclude_glob = args.exclude.as_ref()
+    let exclude_glob = args
+        .exclude
+        .as_ref()
         .map(|p| ::glob::Pattern::new(p))
         .and_then(|r| r.ok());
 
@@ -196,8 +202,14 @@ fn grep_path_with_context(
         for entry in fs::read_dir(path).map_err(|e| ToolError::Execution(e.to_string()))? {
             let entry = entry.map_err(|e| ToolError::Execution(e.to_string()))?;
             grep_path_with_context(
-                root, &entry.path(), query, max_matches, context_lines,
-                include_glob, exclude_glob, matches,
+                root,
+                &entry.path(),
+                query,
+                max_matches,
+                context_lines,
+                include_glob,
+                exclude_glob,
+                matches,
             )?;
             if matches.len() >= max_matches {
                 break;

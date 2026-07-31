@@ -83,18 +83,16 @@ impl RuntimeConfig {
     pub fn needs_api_key(&self) -> Option<String> {
         match &self.provider {
             ProviderSelection::Scripted { .. } => None,
-            ProviderSelection::Route(route) => {
-                match &route.auth.credentials {
-                    joker_provider::CredentialSource::EnvVar(name) => {
-                        if std::env::var(name).is_err() {
-                            Some(name.clone())
-                        } else {
-                            None
-                        }
+            ProviderSelection::Route(route) => match &route.auth.credentials {
+                joker_provider::CredentialSource::EnvVar(name) => {
+                    if std::env::var(name).is_err() {
+                        Some(name.clone())
+                    } else {
+                        None
                     }
-                    _ => None,
                 }
-            }
+                _ => None,
+            },
         }
     }
 

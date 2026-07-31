@@ -9,7 +9,7 @@ use joker::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::workspace::{parse_args, WorkspaceTool};
+use crate::workspace::{WorkspaceTool, parse_args};
 
 /// UTF-8 BOM bytes.
 const UTF8_BOM: &[u8] = &[0xEF, 0xBB, 0xBF];
@@ -24,8 +24,7 @@ enum LineEnding {
 
 fn detect_line_ending(content: &[u8]) -> LineEnding {
     let has_crlf = content.windows(2).any(|w| w == b"\r\n");
-    let has_bare_lf = content.iter().any(|&b| b == b'\n')
-        && !content.windows(2).any(|w| w == b"\r\n");
+    let has_bare_lf = content.contains(&b'\n') && !content.windows(2).any(|w| w == b"\r\n");
     match (has_crlf, has_bare_lf) {
         (true, false) => LineEnding::CrLf,
         (false, true) => LineEnding::Lf,
@@ -91,8 +90,9 @@ impl Tool for WriteFileTool {
             let args = parse_args::<WriteFileArgs>(invocation.arguments)?;
             let path = self.workspace.resolve_write(&args.path)?;
             if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|error| ToolError::Execution(format!("create dirs failed: {error}")))?;
+                fs::create_dir_all(parent).map_err(|error| {
+                    ToolError::Execution(format!("create dirs failed: {error}"))
+                })?;
             }
 
             let mut content = args.content.into_bytes();

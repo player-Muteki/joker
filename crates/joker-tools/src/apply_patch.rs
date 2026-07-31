@@ -8,7 +8,7 @@ use joker::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::workspace::{parse_args, WorkspaceTool};
+use crate::workspace::{WorkspaceTool, parse_args};
 
 #[derive(Debug, Deserialize)]
 struct PatchArgs {
@@ -46,9 +46,9 @@ impl ApplyPatchTool {
                     let hunk_header = &header[..hunk_end];
                     let parts: Vec<&str> = hunk_header.split_whitespace().collect();
                     if parts.len() < 2 {
-                        return Err(ToolError::InvalidArguments(
-                            format!("invalid hunk header: {line}"),
-                        ));
+                        return Err(ToolError::InvalidArguments(format!(
+                            "invalid hunk header: {line}"
+                        )));
                     }
                     let old_start_str = parts[0].strip_prefix('-').unwrap_or(parts[0]);
                     let old_start: usize = old_start_str
@@ -57,8 +57,8 @@ impl ApplyPatchTool {
                         .unwrap_or("1")
                         .parse()
                         .map_err(|_| {
-                            ToolError::InvalidArguments(format!("invalid line number in hunk: {line}"))
-                        })?;
+                        ToolError::InvalidArguments(format!("invalid line number in hunk: {line}"))
+                    })?;
 
                     patch_pos += 1;
                     let mut hunk_removals: Vec<String> = Vec::new();
@@ -107,11 +107,12 @@ impl ApplyPatchTool {
 
                     if search_section == removal_text || (!has_context && removal_text.is_empty()) {
                         let before: Vec<&str> = current_lines[..content_line_idx].to_vec();
-                        let after: Vec<&str> = if content_line_idx + line_count < current_lines.len() {
-                            current_lines[content_line_idx + line_count..].to_vec()
-                        } else {
-                            Vec::new()
-                        };
+                        let after: Vec<&str> =
+                            if content_line_idx + line_count < current_lines.len() {
+                                current_lines[content_line_idx + line_count..].to_vec()
+                            } else {
+                                Vec::new()
+                            };
 
                         let mut new_lines = before;
                         if !addition_text.is_empty() {
@@ -122,11 +123,11 @@ impl ApplyPatchTool {
                         new_lines.extend(after);
 
                         result = new_lines.join("\n");
+                    } else if let Some(pos) = result.find(&removal_text)
+                        && !removal_text.is_empty()
+                    {
+                        result.replace_range(pos..pos + removal_text.len(), &addition_text);
                     }
-                    else if let Some(pos) = result.find(&removal_text)
-                        && !removal_text.is_empty() {
-                            result.replace_range(pos..pos + removal_text.len(), &addition_text);
-                        }
                 }
             } else {
                 patch_pos += 1;

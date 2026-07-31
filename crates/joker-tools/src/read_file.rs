@@ -8,7 +8,7 @@ use joker::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::workspace::{parse_args, truncate_at_char_boundary, detect_line_ending, WorkspaceTool};
+use crate::workspace::{WorkspaceTool, detect_line_ending, parse_args, truncate_at_char_boundary};
 
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp", "webp", "ico"];
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
@@ -97,18 +97,18 @@ impl Tool for ReadFileTool {
                 return Err(ToolError::InvalidArguments(format!(
                     "File too large: {size} bytes (max: {max}). \
                      Use `offset`/`limit` to read portions, or grep/glob to search.",
-                    size = file_size, max = MAX_FILE_SIZE
+                    size = file_size,
+                    max = MAX_FILE_SIZE
                 )));
             }
 
             if Self::is_image(&path) {
-                let bytes = fs::read(&path)
-                    .map_err(|error| ToolError::Execution(error.to_string()))?;
-                let b64 = base64::Engine::encode(
-                    &base64::engine::general_purpose::STANDARD,
-                    &bytes,
-                );
-                let ext = path.extension()
+                let bytes =
+                    fs::read(&path).map_err(|error| ToolError::Execution(error.to_string()))?;
+                let b64 =
+                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                let ext = path
+                    .extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("png")
                     .to_lowercase();
@@ -122,8 +122,7 @@ impl Tool for ReadFileTool {
                 })));
             }
 
-            let raw = fs::read(&path)
-                .map_err(|error| ToolError::Execution(error.to_string()))?;
+            let raw = fs::read(&path).map_err(|error| ToolError::Execution(error.to_string()))?;
 
             let is_binary = likely_binary(&raw);
 
@@ -135,10 +134,7 @@ impl Tool for ReadFileTool {
                         raw.len()
                     )));
                 }
-                let b64 = base64::Engine::encode(
-                    &base64::engine::general_purpose::STANDARD,
-                    &raw,
-                );
+                let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &raw);
                 return Ok(ToolOutput::new(json!({
                     "path": args.path,
                     "content": b64,
@@ -149,12 +145,14 @@ impl Tool for ReadFileTool {
             }
 
             let content = String::from_utf8(raw)
-                .map_err(|_| ToolError::InvalidArguments(
-                    "File is not valid UTF-8 text.".into()
-                ))?;
+                .map_err(|_| ToolError::InvalidArguments("File is not valid UTF-8 text.".into()))?;
 
             let has_bom = content.starts_with('\u{FEFF}');
-            let (bom, text) = if has_bom { ("\u{FEFF}", &content[3..]) } else { ("", content.as_str()) };
+            let (bom, text) = if has_bom {
+                ("\u{FEFF}", &content[3..])
+            } else {
+                ("", content.as_str())
+            };
 
             let max_bytes = args.max_bytes.unwrap_or(64_000).min(200_000);
             let line_ending = detect_line_ending(text);
@@ -163,7 +161,10 @@ impl Tool for ReadFileTool {
             let lines: Vec<&str> = text.lines().collect();
             let total_lines = lines.len();
             let start_line = args.offset.unwrap_or(1).saturating_sub(1);
-            let end_line = args.limit.map(|limit| start_line + limit).unwrap_or(total_lines);
+            let end_line = args
+                .limit
+                .map(|limit| start_line + limit)
+                .unwrap_or(total_lines);
             let selected = if start_line > 0 || end_line < total_lines {
                 if start_line >= total_lines {
                     return Ok(ToolOutput::new(json!({
@@ -181,7 +182,9 @@ impl Tool for ReadFileTool {
                 if end_line < total_lines {
                     selected.push_str(&format!(
                         "\n... (showing lines {}-{} of {})",
-                        start_line + 1, end_line, total_lines
+                        start_line + 1,
+                        end_line,
+                        total_lines
                     ));
                 }
                 selected
@@ -192,9 +195,17 @@ impl Tool for ReadFileTool {
             let truncated = selected.len() > max_bytes;
             let text_out = if truncated {
                 let t = truncate_at_char_boundary(&selected, max_bytes).to_string();
-                if bom.is_empty() { t } else { format!("{bom}{t}") }
+                if bom.is_empty() {
+                    t
+                } else {
+                    format!("{bom}{t}")
+                }
             } else {
-                if bom.is_empty() { selected } else { format!("{bom}{selected}") }
+                if bom.is_empty() {
+                    selected
+                } else {
+                    format!("{bom}{selected}")
+                }
             };
 
             let mut result = json!({
@@ -209,9 +220,10 @@ impl Tool for ReadFileTool {
             });
 
             if args.code_fence.unwrap_or(false)
-                && let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    result["content"] = json!(format!("```{}\n{}\n```", ext, text_out));
-                }
+                && let Some(ext) = path.extension().and_then(|e| e.to_str())
+            {
+                result["content"] = json!(format!("```{}\n{}\n```", ext, text_out));
+            }
 
             Ok(ToolOutput::new(result))
         })
