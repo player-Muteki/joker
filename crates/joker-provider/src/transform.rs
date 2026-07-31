@@ -74,11 +74,21 @@ pub fn scrub_tool_call_ids<S: AsRef<str>>(messages: &[Message], provider: S) -> 
 /// Ensures every assistant message has a reasoning block.
 ///
 /// DeepSeek-style models require every assistant message to include a
-/// `reasoning` block; this adds an empty one if missing.
-pub fn ensure_reasoning_for_model<S: AsRef<str>>(messages: &[Message], model: S) -> Vec<Message> {
-    let model = model.as_ref().to_lowercase();
-    let needs_reasoning =
-        model.contains("deepseek") || model.contains("qwq") || model.contains("r1");
+/// `reasoning` block; this adds an empty one if missing. When `reasoning` is
+/// `Some`, the catalog capability decides; when `None` (model not in any
+/// catalog) the legacy model-name heuristic is used.
+pub fn ensure_reasoning_for_model<S: AsRef<str>>(
+    messages: &[Message],
+    model: S,
+    reasoning: Option<bool>,
+) -> Vec<Message> {
+    let needs_reasoning = match reasoning {
+        Some(enabled) => enabled,
+        None => {
+            let model = model.as_ref().to_lowercase();
+            model.contains("deepseek") || model.contains("qwq") || model.contains("r1")
+        }
+    };
 
     if !needs_reasoning {
         return messages.to_vec();
@@ -185,16 +195,20 @@ pub fn merge_system_messages(messages: &mut Vec<Message>) {
 }
 
 /// Full message normalisation pipeline for a given provider/model.
+///
+/// `reasoning` carries the model's catalog capability when known (see
+/// [`ensure_reasoning_for_model`]).
 pub fn normalize_messages<S1: AsRef<str>, S2: AsRef<str>>(
     messages: &[Message],
     provider: S1,
     model: S2,
+    reasoning: Option<bool>,
 ) -> Vec<Message> {
     let mut msgs = messages.to_vec();
     merge_system_messages(&mut msgs);
     msgs = filter_empty_messages(&msgs);
     msgs = scrub_tool_call_ids(&msgs, provider.as_ref());
-    msgs = ensure_reasoning_for_model(&msgs, model.as_ref());
+    msgs = ensure_reasoning_for_model(&msgs, model.as_ref(), reasoning);
     msgs = merge_text_parts(&msgs);
     msgs
 }
@@ -232,9 +246,16 @@ mod tests {
             content: vec![Content::text("hello")],
         }];
 
-        let result = ensure_reasoning_for_model(&msgs, "deepseek-v4");
+        let result = ensure_reasoning_for_model(&msgs, "deepseek-v4", None);
         assert_eq!(result[0].content.len(), 2);
         assert!(matches!(result[0].content[1], Content::Reasoning(_)));
+
+        let result = ensure_reasoning_for_model(&msgs, "anything", Some(true));
+        assert_eq!(result[0].content.len(), 2);
+        assert!(matches!(result[0].content[1], Content::Reasoning(_)));
+
+        let result = ensure_reasoning_for_model(&msgs, "deepseek-v4", Some(false));
+        assert_eq!(result[0].content.len(), 1, "capability=false overrides name heuristic");
     }
 
     #[test]

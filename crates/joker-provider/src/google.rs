@@ -18,12 +18,14 @@ use joker::{
     Content, Message, Model, ModelError, ModelFuture, ModelRequest, ModelResponseEvent,
     ModelStream, Role, StopReason, ToolCall, ToolDefinition, Usage,
 };
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::sync::mpsc;
+use tracing::warn;
 
+use crate::sse::SseTokenizer;
 use crate::transform;
 
 /// Default base URL for the Gemini API.
@@ -41,6 +43,9 @@ pub struct GoogleConfig {
     pub model: String,
     /// Google API key.
     pub api_key: String,
+    /// HTTP headers merged into every request, including the resolved
+    /// `x-goog-api-key` header.
+    pub headers: Vec<(String, String)>,
 }
 
 impl GoogleConfig {
@@ -63,6 +68,9 @@ pub enum GoogleProviderError {
     /// The API key could not be parsed as a valid HTTP header value.
     #[error("invalid authorization header")]
     InvalidAuthHeader,
+    /// A configured header name is not a valid HTTP header name.
+    #[error("invalid header name: {0}")]
+    InvalidHeader(String),
     /// An error returned by the Google API.
     #[error("google api error: {0}")]
     Api(String),
@@ -86,10 +94,16 @@ impl GoogleModel {
         }
 
         let mut headers = HeaderMap::new();
-        let mut auth_header = HeaderValue::from_str(&config.api_key)
-            .map_err(|_| GoogleProviderError::InvalidAuthHeader)?;
-        auth_header.set_sensitive(true);
-        headers.insert("x-goog-api-key", auth_header);
+        for (name, value) in &config.headers {
+            let parsed = name
+                .parse::<HeaderName>()
+                .map_err(|_| GoogleProviderError::InvalidHeader(name.clone()))?;
+            headers.insert(
+                parsed,
+                HeaderValue::from_str(value)
+                    .map_err(|_| GoogleProviderError::InvalidAuthHeader)?,
+            );
+        }
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
         let client = reqwest::Client::builder()
@@ -108,24 +122,31 @@ impl Model for GoogleModel {
 
         Box::pin(async move {
             let body = build_request_body(&config.model, &request);
-            let response = client
-                .post(config.stream_url())
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| ModelError::Stream(e.to_string()))?;
+            let mut last_error = None;
+            for attempt in 1..=2 {
+                match client.post(config.stream_url()).json(&body).send().await {
+                    Ok(response) => {
+                        if !response.status().is_success() {
+                            let status = response.status().as_u16();
+                            let body = response.text().await.unwrap_or_default();
+                            let kind = crate::classify_error(status, &body, "google");
+                            return Err(ModelError::Classified {
+                                kind,
+                                message: format!("Google request failed with {status}: {body}"),
+                            });
+                        }
 
-            if !response.status().is_success() {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                return Err(ModelError::Stream(format!(
-                    "Google request failed with {status}: {body}"
-                )));
+                        let (tx, rx) = mpsc::unbounded_channel();
+                        tokio::spawn(parse_sse_stream(response, tx));
+                        return Ok(Box::new(ReceiverStream { rx }) as ModelStream);
+                    }
+                    Err(error) => {
+                        warn!(target: "provider", provider = "google", attempt, max_attempts = 2, error = %error, "request failed, retrying");
+                        last_error = Some(error);
+                    }
+                }
             }
-
-            let (tx, rx) = mpsc::unbounded_channel();
-            tokio::spawn(parse_sse_stream(response, tx));
-            Ok(Box::new(ReceiverStream { rx }) as ModelStream)
+            Err(ModelError::Stream(last_error.unwrap().to_string()))
         })
     }
 }
@@ -151,7 +172,7 @@ impl Stream for ReceiverStream {
 // ---------------------------------------------------------------------------
 
 fn build_request_body(model: &str, request: &ModelRequest) -> Value {
-    let msgs = transform::normalize_messages(&request.messages, "google", model);
+    let msgs = transform::normalize_messages(&request.messages, "google", model, None);
     let contents = build_contents(&msgs);
     let system_instruction = build_system_instruction(&msgs);
     let tools = build_tools(&request.tools);
@@ -346,41 +367,32 @@ struct GeminiError {
 // SSE parser
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 struct GeminiSseParser {
-    buffer: String,
+    tokenizer: SseTokenizer,
 }
 
 impl GeminiSseParser {
     fn new() -> Self {
         Self {
-            buffer: String::new(),
+            tokenizer: SseTokenizer::new(),
         }
     }
 
     fn push(&mut self, chunk: &str) -> Vec<ParsedEvent> {
-        self.buffer.push_str(chunk);
         let mut events = Vec::new();
 
-        while let Some(delim) = self.buffer.find("\n\n") {
-            let raw = self.buffer[..delim].to_string();
-            self.buffer.drain(..=delim + 1);
-
-            // Gemini SSE uses `data: {...}` lines
-            for line in raw.lines() {
-                let data = line.trim();
-                if let Some(json_str) = data.strip_prefix("data:") {
-                    let json_str = json_str.trim();
-                    if json_str.is_empty() || json_str == "{}" {
-                        continue;
-                    }
-                    match self.parse_chunk(json_str) {
-                        Ok(Some(ev)) => events.push(ev),
-                        Ok(None) => {}
-                        Err(e) => {
-                            events.push(ParsedEvent::Error(e));
-                            return events;
-                        }
+        for event in self.tokenizer.push(chunk) {
+            for json_str in event.data.lines() {
+                let json_str = json_str.trim();
+                if json_str.is_empty() || json_str == "{}" {
+                    continue;
+                }
+                match self.parse_chunk(json_str) {
+                    Ok(Some(ev)) => events.push(ev),
+                    Ok(None) => {}
+                    Err(e) => {
+                        events.push(ParsedEvent::Error(e));
+                        return events;
                     }
                 }
             }
@@ -463,8 +475,13 @@ impl GeminiSseParser {
 
     #[allow(dead_code)]
     fn finish(&mut self) -> Vec<ParsedEvent> {
-        // Nothing to flush for Google (all content is event-based)
-        vec![]
+        let mut events = Vec::new();
+        for event in self.tokenizer.finish() {
+            if let Ok(Some(ev)) = self.parse_chunk(&event.data) {
+                events.push(ev);
+            }
+        }
+        events
     }
 }
 

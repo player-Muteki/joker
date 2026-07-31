@@ -27,7 +27,7 @@ pub enum CredentialError {
 /// store.set("deepseek", "sk-xxx".to_string());
 /// assert!(store.has("deepseek"));
 /// ```
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct CredentialStore {
     credentials: HashMap<String, String>,
     path: Option<PathBuf>,
@@ -65,14 +65,46 @@ impl CredentialStore {
     /// This mirrors pi's `getApiKey()` priority: store > env.
     #[must_use]
     pub fn get(&self, provider_id: &str) -> Option<String> {
+        self.get_with_env(provider_id, None)
+    }
+
+    /// Get the API key for a provider with an explicit env var name.
+    ///
+    /// Resolution order: credential store → `env_name` → inferred
+    /// `{PROVIDER}_API_KEY`. The explicit env name matters when a provider's
+    /// configured variable differs from the inferred one (e.g. a custom
+    /// provider with `api_key_env = "MY_CUSTOM_KEY"`).
+    #[must_use]
+    pub fn get_with_env(&self, provider_id: &str, env_name: Option<&str>) -> Option<String> {
+        self.get_with_env_using(provider_id, env_name, |name| std::env::var(name).ok())
+    }
+
+    /// Resolve a credential with an injectable environment lookup.
+    ///
+    /// The testable core of [`get_with_env`]: the caller supplies the
+    /// environment accessor so the resolution chain can be exercised
+    /// without mutating the process environment.
+    #[must_use]
+    pub fn get_with_env_using(
+        &self,
+        provider_id: &str,
+        env_name: Option<&str>,
+        env: impl Fn(&str) -> Option<String>,
+    ) -> Option<String> {
         debug!(target: "credential", provider = %provider_id, "getting API key");
         // Try stored credential first
         if let Some(key) = self.credentials.get(provider_id) {
             return Some(key.clone());
         }
-        // Fall back to environment variable
+        // Fall back to the explicitly configured env var
+        if let Some(name) = env_name
+            && let Some(value) = env(name)
+        {
+            return Some(value);
+        }
+        // Last resort: inferred `{PROVIDER}_API_KEY`
         let env_var = format!("{}_API_KEY", provider_id.to_uppercase());
-        std::env::var(env_var).ok()
+        env(&env_var)
     }
 
     /// Set the API key for a provider (in-memory).
@@ -146,5 +178,74 @@ impl CredentialStore {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.credentials.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fake environment lookup backed by a static map, for chain tests.
+    fn fake_env<'a>(values: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            values
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.to_string())
+        }
+    }
+
+    #[test]
+    fn get_with_env_prefers_store_over_env() {
+        let mut store = CredentialStore::new();
+        store.set("myllm", "sk-stored".into());
+        let env = fake_env(&[("MYLLM_API_KEY", "sk-env")]);
+        assert_eq!(
+            store.get_with_env_using("myllm", Some("MYLLM_API_KEY"), env),
+            Some("sk-stored".into())
+        );
+    }
+
+    #[test]
+    fn get_with_env_uses_explicit_env_name_when_store_misses() {
+        let store = CredentialStore::new();
+        let env = fake_env(&[("MY_CUSTOM_KEY", "sk-explicit")]);
+        assert_eq!(
+            store.get_with_env_using("myllm", Some("MY_CUSTOM_KEY"), env),
+            Some("sk-explicit".into())
+        );
+    }
+
+    #[test]
+    fn get_with_env_falls_back_to_inferred_env_name() {
+        let store = CredentialStore::new();
+        let env = fake_env(&[("MYLLM_API_KEY", "sk-inferred")]);
+        assert_eq!(
+            store.get_with_env_using("myllm", Some("JKR_TEST_UNSET"), env),
+            Some("sk-inferred".into())
+        );
+    }
+
+    #[test]
+    fn get_with_env_returns_none_when_nothing_resolves() {
+        let store = CredentialStore::new();
+        assert_eq!(store.get_with_env_using("myllm", Some("JKR_TEST_UNSET"), fake_env(&[])), None);
+    }
+
+    #[test]
+    fn get_uses_store_then_inferred_env() {
+        let store = CredentialStore::new();
+        let env = fake_env(&[("DEEPSEEK_API_KEY", "sk-ds")]);
+        assert_eq!(
+            store.get_with_env_using("deepseek", None, env),
+            Some("sk-ds".into())
+        );
+        let mut store = store;
+        store.set("deepseek", "sk-ds-stored".into());
+        let env = fake_env(&[("DEEPSEEK_API_KEY", "sk-ds")]);
+        assert_eq!(
+            store.get_with_env_using("deepseek", None, env),
+            Some("sk-ds-stored".into())
+        );
     }
 }

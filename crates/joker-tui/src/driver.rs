@@ -55,6 +55,7 @@ impl Observer for ChannelObserver {
 #[derive(Clone)]
 pub struct AgentDriver {
     runtime_config: RuntimeConfig,
+    credential_store: joker::CredentialStore,
     workspace: PathBuf,
     agents_dir: PathBuf,
     compact_pending: bool,
@@ -134,6 +135,7 @@ impl AgentDriver {
 
         Self {
             runtime_config,
+            credential_store: joker::CredentialStore::new(),
             workspace,
             agents_dir,
             compact_pending: false,
@@ -146,6 +148,14 @@ impl AgentDriver {
     /// Update the runtime configuration used to build subsequent agents.
     pub fn set_runtime_config(&mut self, runtime_config: RuntimeConfig) {
         self.runtime_config = runtime_config;
+    }
+
+    /// Set the credential store consulted when building models.
+    ///
+    /// Attached to the active route so model construction resolves keys
+    /// through the unified auth chain (value > store > env).
+    pub fn set_credential_store(&mut self, store: joker::CredentialStore) {
+        self.credential_store = store;
     }
 
     /// Return the name of the currently active agent profile.
@@ -360,7 +370,11 @@ impl AgentDriver {
                 } else {
                     &route.default_model
                 };
-                route.build_model_for(model).map_err(TuiError::Agent)
+                route
+                    .clone()
+                    .with_credential_store(self.credential_store.clone())
+                    .build_model_for(model)
+                    .map_err(TuiError::Agent)
             }
         }
     }

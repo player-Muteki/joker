@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     TuiError,
-    app::{App, AppAction, DialogKind, TranscriptItem},
+    app::{App, AppAction, DialogKind, TranscriptItem, catalog_models},
     commands::{self, CommandAction},
     driver::AgentDriver,
     event::UiEvent,
@@ -73,6 +73,10 @@ pub async fn run_tui(options: TuiOptions) -> Result<(), TuiError> {
 
     // Set up credential store in ~/.joker/auth.json
     app.set_credential_path(joker_home_dir().join("auth.json"));
+    driver.set_credential_store(app.credential_store.clone());
+
+    // Kick off model discovery so the /model picker fills in early.
+    spawn_model_discovery(&app, tx.clone());
 
     if let Some(prompt) = options.initial_prompt {
         app.composer = prompt;
@@ -212,6 +216,7 @@ fn handle_api_key_confirm(
     // Store credential in persistent store and save to disk
     app.credential_store.set(provider_id, api_key.to_string());
     let _ = app.credential_store.save();
+    driver.set_credential_store(app.credential_store.clone());
 
     // Set the API key in the runtime config so model building picks it up
     if let joker_config::ProviderSelection::Route(route) = &mut app.runtime_config.provider {
@@ -410,7 +415,7 @@ fn sync_provider_after_change(
     driver: &mut AgentDriver,
     tx: mpsc::UnboundedSender<UiEvent>,
 ) {
-    app.available_models = app.runtime_config.available_models();
+    app.available_models = catalog_models(&app.runtime_config);
     let mut needs_api_key = false;
 
     if let joker_config::ProviderSelection::Route(route) = &mut app.runtime_config.provider {
@@ -439,8 +444,14 @@ fn spawn_model_discovery(app: &App, tx: mpsc::UnboundedSender<UiEvent>) {
         return;
     };
     let route = route.clone();
+    // Resolve credentials through the unified chain so stored keys work
+    // for discovery as well as for model construction.
+    let auth =
+        joker_provider::resolve_auth(&route.id, &route.auth, Some(&app.credential_store));
+    let protocol = route.protocol.clone();
     tokio::spawn(async move {
-        let result = joker_provider::discover_models(&route.base_url, &route.auth).await;
+        let result =
+            joker_provider::discover_models(&route.base_url, &auth, &protocol).await;
         let _ = tx.send(UiEvent::ModelDiscoveryCompleted(result));
     });
 }

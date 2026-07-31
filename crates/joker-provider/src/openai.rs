@@ -1,9 +1,8 @@
 //! OpenAI-compatible chat completions provider.
 //!
 //! Implements the [`Model`](joker::Model) trait for any provider that speaks the
-//! OpenAI `/v1/chat/completions` wire format. Includes SSE stream parsing,
-//! tool-call streaming, and provider-specific configuration helpers
-//! ([`alibaba_config`], [`zhipuai_config`], [`moonshot_config`], [`baidu_config`]).
+//! OpenAI `/v1/chat/completions` wire format. Includes SSE stream parsing and
+//! tool-call streaming.
 
 use std::{
     collections::BTreeMap,
@@ -17,12 +16,15 @@ use joker::{
     Content, Message, Model, ModelError, ModelFuture, ModelRequest, ModelResponseEvent,
     ModelStream, Role, StopReason, ToolCall, ToolDefinition, ToolResult, Usage,
 };
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::{error, info, trace, warn};
+
+use crate::sse::{SseEvent, SseTokenizer};
+use crate::transform;
 
 /// Configuration for an OpenAI-compatible provider.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +43,12 @@ pub struct OpenAiCompatibleConfig {
     pub require_api_key: bool,
     /// Additional JSON body fields merged into the request (e.g. `enable_thinking`, `top_p`).
     pub extra_body: Option<serde_json::Value>,
+    /// Whether the model produces reasoning content (drives reasoning-block
+    /// normalization); `None` falls back to model-name heuristics.
+    pub reasoning: Option<bool>,
+    /// HTTP headers merged into every request, including the resolved
+    /// authorization header from the route's auth scheme.
+    pub headers: Vec<(String, String)>,
 }
 
 impl OpenAiCompatibleConfig {
@@ -106,6 +114,9 @@ pub enum OpenAiProviderError {
     /// The API key could not be parsed as a valid HTTP header value.
     #[error("invalid authorization header")]
     InvalidAuthorizationHeader,
+    /// A configured header name is not a valid HTTP header name.
+    #[error("invalid header name: {0}")]
+    InvalidHeader(String),
 }
 
 /// A model backed by an OpenAI-compatible chat completions endpoint.
@@ -129,11 +140,13 @@ impl OpenAiCompatibleModel {
         }
 
         let mut headers = HeaderMap::new();
-        if let Some(api_key) = config.api_key.as_deref().filter(|value| !value.is_empty()) {
-            let auth_value = format!("Bearer {api_key}");
+        for (name, value) in &config.headers {
+            let parsed = name
+                .parse::<HeaderName>()
+                .map_err(|_| OpenAiProviderError::InvalidHeader(name.clone()))?;
             headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&auth_value)
+                parsed,
+                HeaderValue::from_str(value)
                     .map_err(|_| OpenAiProviderError::InvalidAuthorizationHeader)?,
             );
         }
@@ -184,20 +197,25 @@ impl Model for OpenAiCompatibleModel {
         let url = self.config.chat_url();
         let extra = self.config.effective_extra_body();
         let provider_name = self.config.provider_name.clone();
+        let reasoning = self.config.reasoning;
 
         Box::pin(async move {
             info!(target: "provider", provider = %provider_name, model = %config_model, "streaming request");
-            let body = chat_request_body(&config_model, &request, extra.as_ref());
+            let body = chat_request_body(&config_model, &request, extra.as_ref(), reasoning);
             let mut last_error = None;
             for attempt in 1..=2 {
                 match client.post(&url).json(&body).send().await {
                     Ok(response) => {
                         if !response.status().is_success() {
-                            let status = response.status();
+                            let status = response.status().as_u16();
                             let body = response.text().await.unwrap_or_default();
-                            return Err(ModelError::Stream(format!(
-                                "{provider_name} request failed with {status}: {body}"
-                            )));
+                            let kind = crate::classify_error(status, &body, &provider_name);
+                            return Err(ModelError::Classified {
+                                kind,
+                                message: format!(
+                                    "{provider_name} request failed with {status}: {body}"
+                                ),
+                            });
                         }
                         let (tx, rx) = mpsc::unbounded_channel();
                         let provider = provider_name.clone();
@@ -285,43 +303,37 @@ async fn parse_response_stream(
 
 #[derive(Default)]
 struct SseParser {
-    pending: String,
+    tokenizer: SseTokenizer,
     tool_calls: BTreeMap<u64, PartialToolCall>,
+    usage: Usage,
 }
 
 impl SseParser {
     fn push(&mut self, chunk: &str) -> Vec<ParsedSse> {
-        self.pending.push_str(chunk);
-        let mut parsed = Vec::new();
-
-        while let Some(index) = self.pending.find('\n') {
-            let mut line = self.pending.drain(..=index).collect::<String>();
-            line.truncate(line.trim_end_matches(['\r', '\n']).len());
-            if let Some(item) = self.parse_line(&line) {
-                parsed.push(item);
-            }
-        }
-
-        parsed
+        self.tokenizer
+            .push(chunk)
+            .into_iter()
+            .flat_map(|event| self.parse_event(&event))
+            .collect()
     }
 
     fn finish(&mut self) -> Vec<ParsedSse> {
-        if self.pending.is_empty() {
-            return Vec::new();
-        }
-        let line = std::mem::take(&mut self.pending);
-        self.parse_line(&line).into_iter().collect()
+        self.tokenizer
+            .finish()
+            .into_iter()
+            .flat_map(|event| self.parse_event(&event))
+            .collect()
     }
 
-    fn parse_line(&mut self, line: &str) -> Option<ParsedSse> {
-        let data = line.strip_prefix("data:")?.trim();
+    fn parse_event(&mut self, event: &SseEvent) -> Vec<ParsedSse> {
+        let data = event.data.trim();
         if data.is_empty() {
-            return None;
+            return Vec::new();
         }
         if data == "[DONE]" {
-            return Some(ParsedSse::Done);
+            return vec![ParsedSse::Done];
         }
-        Some(parse_chat_chunk(data, &mut self.tool_calls))
+        parse_chat_chunk(data, &mut self.tool_calls, &mut self.usage)
     }
 }
 
@@ -338,21 +350,33 @@ struct PartialToolCall {
     arguments: String,
 }
 
-fn parse_chat_chunk(data: &str, tool_calls: &mut BTreeMap<u64, PartialToolCall>) -> ParsedSse {
+fn parse_chat_chunk(
+    data: &str,
+    tool_calls: &mut BTreeMap<u64, PartialToolCall>,
+    usage: &mut Usage,
+) -> Vec<ParsedSse> {
     let chunk = match serde_json::from_str::<ChatChunk>(data) {
         Ok(chunk) => chunk,
-        Err(error) => return ParsedSse::Error(format!("invalid SSE JSON: {error}: {data}")),
+        Err(error) => return vec![ParsedSse::Error(format!("invalid SSE JSON: {error}: {data}"))],
     };
+
+    if let Some(chunk_usage) = chunk.usage {
+        usage.input_tokens = chunk_usage.prompt_tokens.unwrap_or(usage.input_tokens);
+        usage.output_tokens = chunk_usage.completion_tokens.unwrap_or(usage.output_tokens);
+    }
+
     let Some(choice) = chunk.choices.into_iter().next() else {
-        return ParsedSse::Error("chat chunk had no choices".into());
+        // Usage-only trailing chunk (the stream_options include_usage final event).
+        return Vec::new();
     };
+
+    let mut events = Vec::new();
 
     if let Some(delta) = choice.delta {
         if let Some(text) = delta.content.filter(|value| !value.is_empty()) {
-            return ParsedSse::Event(ModelResponseEvent::TextDelta(text));
-        }
-        if let Some(text) = delta.reasoning_content.filter(|value| !value.is_empty()) {
-            return ParsedSse::Event(ModelResponseEvent::ReasoningDelta(text));
+            events.push(ParsedSse::Event(ModelResponseEvent::TextDelta(text)));
+        } else if let Some(text) = delta.reasoning_content.filter(|value| !value.is_empty()) {
+            events.push(ParsedSse::Event(ModelResponseEvent::ReasoningDelta(text)));
         }
         if let Some(calls) = delta.tool_calls {
             let mut completed = Vec::new();
@@ -376,27 +400,27 @@ fn parse_chat_chunk(data: &str, tool_calls: &mut BTreeMap<u64, PartialToolCall>)
                     completed.push(call.index);
                 }
             }
-            if let Some(index) = completed.into_iter().next() {
+            for index in completed {
                 let call = tool_calls.remove(&index).expect("completed key exists");
                 let arguments =
                     serde_json::from_str(&call.arguments).unwrap_or(Value::String(call.arguments));
-                return ParsedSse::Event(ModelResponseEvent::ToolCall(ToolCall {
+                events.push(ParsedSse::Event(ModelResponseEvent::ToolCall(ToolCall {
                     id: call.id,
                     name: call.name,
                     arguments,
-                }));
+                })));
             }
         }
     }
 
     if let Some(reason) = choice.finish_reason {
-        return ParsedSse::Event(ModelResponseEvent::Finished {
+        events.push(ParsedSse::Event(ModelResponseEvent::Finished {
             stop_reason: map_finish_reason(&reason),
-            usage: Usage::default(),
-        });
+            usage: std::mem::take(usage),
+        }));
     }
 
-    ParsedSse::Error("chat chunk had no supported delta or finish reason".into())
+    events
 }
 
 fn is_complete_json(value: &str) -> bool {
@@ -412,11 +436,22 @@ fn map_finish_reason(reason: &str) -> StopReason {
 }
 
 /// Build the JSON request body for a chat completions call.
-pub fn chat_request_body(model: &str, request: &ModelRequest, extra_body: Option<&Value>) -> Value {
+///
+/// Requests `stream_options.include_usage` so the final stream chunk carries
+/// token usage. `reasoning` (`None` when the model is unknown) drives
+/// reasoning-block normalization via [`transform::normalize_messages`].
+pub fn chat_request_body(
+    model: &str,
+    request: &ModelRequest,
+    extra_body: Option<&Value>,
+    reasoning: Option<bool>,
+) -> Value {
+    let messages = transform::normalize_messages(&request.messages, "openai", model, reasoning);
     let mut body = json!({
         "model": model,
         "stream": true,
-        "messages": request.messages.iter().map(openai_message).collect::<Vec<_>>(),
+        "stream_options": {"include_usage": true},
+        "messages": messages.iter().map(openai_message).collect::<Vec<_>>(),
         "tools": request.tools.iter().map(openai_tool).collect::<Vec<_>>(),
     });
 
@@ -508,6 +543,13 @@ fn openai_tool(tool: &ToolDefinition) -> Value {
 #[derive(Debug, Deserialize)]
 struct ChatChunk {
     choices: Vec<ChatChoice>,
+    usage: Option<ChatUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatUsage {
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -536,73 +578,6 @@ struct ChatFunctionDelta {
     arguments: Option<String>,
 }
 
-/// Build an `OpenAiCompatibleConfig` for Alibaba DashScope with `enable_thinking` for reasoning models.
-pub fn alibaba_config(api_key: String, model: String) -> OpenAiCompatibleConfig {
-    let model_lower = model.to_lowercase();
-    let extra_body = if model_lower.contains("qwq")
-        || model_lower.contains("kimi-k2")
-        || model_lower.contains("deepseek-r1")
-    {
-        Some(json!({"enable_thinking": true}))
-    } else {
-        None
-    };
-    OpenAiCompatibleConfig {
-        provider_name: "alibaba".into(),
-        base_url: crate::ALIBABA.base_url.into(),
-        model,
-        api_key: Some(api_key),
-        api_key_env: Some(crate::ALIBABA.api_key_env.into()),
-        require_api_key: true,
-        extra_body,
-    }
-}
-
-/// Build an `OpenAiCompatibleConfig` for ZhipuAI GLM with thinking enabled.
-pub fn zhipuai_config(api_key: String, model: String) -> OpenAiCompatibleConfig {
-    let model_lower = model.to_lowercase();
-    let extra_body = if model_lower.contains("glm") {
-        Some(json!({"thinking": {"type": "enabled", "clear_thinking": false}}))
-    } else {
-        None
-    };
-    OpenAiCompatibleConfig {
-        provider_name: "zhipuai".into(),
-        base_url: crate::ZHIPUAI.base_url.into(),
-        model,
-        api_key: Some(api_key),
-        api_key_env: Some(crate::ZHIPUAI.api_key_env.into()),
-        require_api_key: true,
-        extra_body,
-    }
-}
-
-/// Build an `OpenAiCompatibleConfig` for Moonshot AI (Kimi).
-pub fn moonshot_config(api_key: String, model: String) -> OpenAiCompatibleConfig {
-    OpenAiCompatibleConfig {
-        provider_name: "moonshot".into(),
-        base_url: crate::MOONSHOT.base_url.into(),
-        model,
-        api_key: Some(api_key),
-        api_key_env: Some(crate::MOONSHOT.api_key_env.into()),
-        require_api_key: true,
-        extra_body: None,
-    }
-}
-
-/// Build an `OpenAiCompatibleConfig` for Baidu ERNIE.
-pub fn baidu_config(api_key: String, model: String) -> OpenAiCompatibleConfig {
-    OpenAiCompatibleConfig {
-        provider_name: "baidu".into(),
-        base_url: crate::BAIDU.base_url.into(),
-        model,
-        api_key: Some(api_key),
-        api_key_env: Some(crate::BAIDU.api_key_env.into()),
-        require_api_key: true,
-        extra_body: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,10 +595,11 @@ mod tests {
             }],
         };
 
-        let body = chat_request_body("deepseek-v4-flash", &request, None);
+        let body = chat_request_body("deepseek-v4-flash", &request, None, None);
 
         assert_eq!(body["model"], "deepseek-v4-flash");
         assert_eq!(body["stream"], true);
+        assert_eq!(body["stream_options"]["include_usage"], true);
         assert_eq!(body["messages"][0]["role"], "user");
         assert_eq!(body["tools"][0]["function"]["name"], "read_file");
     }
@@ -632,9 +608,9 @@ mod tests {
     fn parses_text_and_finish_chunks() {
         let mut parser = SseParser::default();
         let events = parser.push(
-            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\
-             data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\
-             data: [DONE]\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+             data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n\
+             data: [DONE]\n\n",
         );
 
         assert!(matches!(
@@ -654,8 +630,8 @@ mod tests {
     fn parses_streamed_tool_call_arguments() {
         let mut parser = SseParser::default();
         let events = parser.push(
-            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"text\\\":\"}}]}}]}\n\
-             data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"hi\\\"}\"}}]}}]}\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"text\\\":\"}}]}}]}\n\n\
+             data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"hi\\\"}\"}}]}}]}\n\n",
         );
 
         assert!(matches!(
@@ -663,6 +639,53 @@ mod tests {
             Some(ParsedSse::Event(ModelResponseEvent::ToolCall(call)))
                 if call.id == "call-1" && call.name == "echo" && call.arguments == json!({"text":"hi"})
         ));
+    }
+
+    #[test]
+    fn emits_all_completed_tool_calls_in_one_chunk() {
+        let mut parser = SseParser::default();
+        let events = parser.push(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-a\",\"function\":{\"name\":\"tool_a\",\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"call-b\",\"function\":{\"name\":\"tool_b\",\"arguments\":\"{}\"}}]}}]}\n\n",
+        );
+
+        let calls: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ParsedSse::Event(ModelResponseEvent::ToolCall(call)) => Some(call.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls, vec!["tool_a", "tool_b"]);
+    }
+
+    #[test]
+    fn captures_usage_from_usage_chunk() {
+        let mut parser = SseParser::default();
+        let events = parser.push(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+             data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3}}\n\n\
+             data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        );
+
+        let finished = events.iter().find_map(|event| match event {
+            ParsedSse::Event(ModelResponseEvent::Finished { usage, .. }) => Some(usage),
+            _ => None,
+        });
+        assert_eq!(finished.expect("finished event").input_tokens, 12);
+        assert_eq!(finished.expect("finished event").output_tokens, 3);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ParsedSse::Event(ModelResponseEvent::TextDelta(t)) if t == "hi"))
+        );
+    }
+
+    #[test]
+    fn ignores_role_only_delta_chunk() {
+        let mut parser = SseParser::default();
+        let events =
+            parser.push("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n");
+        assert!(events.is_empty(), "role-only chunk is a no-op, not an error");
     }
 
     #[test]
@@ -689,6 +712,8 @@ mod tests {
             api_key_env: Some("DEEPSEEK_API_KEY".into()),
             require_api_key: true,
             extra_body: None,
+            reasoning: None,
+            headers: vec![],
         })
         .unwrap_err();
 
@@ -705,6 +730,8 @@ mod tests {
             api_key_env: None,
             require_api_key: false,
             extra_body: None,
+            reasoning: None,
+            headers: vec![],
         });
 
         assert!(model.is_ok());

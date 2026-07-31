@@ -55,8 +55,8 @@ pub use event::{Event, NoopObserver, Observer, ObserverFuture, RecordingObserver
 pub use hook::{Hook, HookRegistry};
 pub use message_queue::{DrainMode, PendingMessageQueue};
 pub use model::{
-    Model, ModelError, ModelFuture, ModelRequest, ModelResponseEvent, ModelStream, ScriptedModel,
-    ScriptedStep,
+    Model, ModelError, ModelErrorKind, ModelFuture, ModelRequest, ModelResponseEvent, ModelStream,
+    ScriptedModel, ScriptedStep,
 };
 pub use permission_engine::{
     AgentPermission, PermissionDecision, PermissionEngine, PermissionSetting,

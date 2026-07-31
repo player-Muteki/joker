@@ -56,7 +56,7 @@ impl SlashCommand for ProviderCommand {
 
     fn complete(&self, args_partial: &str) -> Vec<String> {
         let partial = args_partial.to_ascii_lowercase();
-        PROVIDER_IDS
+        provider_ids()
             .iter()
             .filter(|id| id.to_ascii_lowercase().starts_with(&partial))
             .map(|s| s.to_string())
@@ -64,26 +64,28 @@ impl SlashCommand for ProviderCommand {
     }
 }
 
-const PROVIDER_IDS: &[&str] = &[
-    DEEPSEEK.id,
-    ALIBABA.id,
-    ZHIPUAI.id,
-    MOONSHOT.id,
-    BAIDU.id,
-    ANTHROPIC.id,
-    GOOGLE.id,
-    "scripted",
-];
+fn provider_ids() -> Vec<&'static str> {
+    vec![
+        &DEEPSEEK.id,
+        &ALIBABA.id,
+        &ZHIPUAI.id,
+        &MOONSHOT.id,
+        &BAIDU.id,
+        &ANTHROPIC.id,
+        &GOOGLE.id,
+        "scripted",
+    ]
+}
 
 fn available_providers_for_dialog() -> Vec<(String, String)> {
     let providers: [(&str, &str); 8] = [
-        ("DeepSeek", DEEPSEEK.id),
-        ("Alibaba Cloud (DashScope)", ALIBABA.id),
-        ("ZhipuAI (GLM)", ZHIPUAI.id),
-        ("Moonshot (Kimi)", MOONSHOT.id),
-        ("Baidu (ERNIE)", BAIDU.id),
-        ("Anthropic", ANTHROPIC.id),
-        ("Google", GOOGLE.id),
+        ("DeepSeek", &DEEPSEEK.id),
+        ("Alibaba Cloud (DashScope)", &ALIBABA.id),
+        ("ZhipuAI (GLM)", &ZHIPUAI.id),
+        ("Moonshot (Kimi)", &MOONSHOT.id),
+        ("Baidu (ERNIE)", &BAIDU.id),
+        ("Anthropic", &ANTHROPIC.id),
+        ("Google", &GOOGLE.id),
         ("Scripted (no AI)", "scripted"),
     ];
     providers

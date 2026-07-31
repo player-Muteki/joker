@@ -96,7 +96,11 @@ impl ReconnectDetector {
                         return;
                     }
                 }
-                Some(Err(error)) if !self.has_emitted && self.attempt < self.max_retries => {
+                Some(Err(error))
+                    if !self.has_emitted
+                        && error.is_retryable()
+                        && self.attempt < self.max_retries =>
+                {
                     self.attempt += 1;
                     let delay = self.base_delay_ms * (1u64 << (self.attempt - 1));
                     let _ = self.tx.send(Ok(ModelResponseEvent::Retrying {

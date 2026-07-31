@@ -19,13 +19,14 @@ use joker::{
     Content, Message, Model, ModelError, ModelFuture, ModelRequest, ModelResponseEvent,
     ModelStream, Role, StopReason, ToolCall, ToolDefinition, Usage,
 };
-use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::{error, info, trace, warn};
 
+use crate::sse::SseTokenizer;
 use crate::transform;
 
 /// Default base URL for the Anthropic Messages API.
@@ -49,6 +50,11 @@ pub struct AnthropicConfig {
     pub model: String,
     /// Anthropic API key.
     pub api_key: String,
+    /// Default `max_tokens` from the model catalog, if known.
+    pub max_tokens: Option<u64>,
+    /// HTTP headers merged into every request, including the resolved
+    /// `x-api-key` header and the `anthropic-version` default.
+    pub headers: Vec<(String, String)>,
 }
 
 impl AnthropicConfig {
@@ -66,6 +72,9 @@ pub enum AnthropicProviderError {
     /// The API key could not be parsed as a valid HTTP header value.
     #[error("invalid authorization header")]
     InvalidAuthHeader,
+    /// A configured header name is not a valid HTTP header name.
+    #[error("invalid header name: {0}")]
+    InvalidHeader(String),
     /// An error returned by the Anthropic API.
     #[error("anthropic api error: {0}")]
     Api(String),
@@ -91,15 +100,17 @@ impl AnthropicModel {
         }
 
         let mut headers = HeaderMap::new();
-        let mut auth_header = HeaderValue::from_str(&config.api_key)
-            .map_err(|_| AnthropicProviderError::InvalidAuthHeader)?;
-        auth_header.set_sensitive(true);
-        headers.insert("x-api-key", auth_header);
+        for (name, value) in &config.headers {
+            let parsed = name
+                .parse::<HeaderName>()
+                .map_err(|_| AnthropicProviderError::InvalidHeader(name.clone()))?;
+            headers.insert(
+                parsed,
+                HeaderValue::from_str(value)
+                    .map_err(|_| AnthropicProviderError::InvalidAuthHeader)?,
+            );
+        }
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(
-            "anthropic-version",
-            HeaderValue::from_static(ANTHROPIC_VERSION),
-        );
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
@@ -117,17 +128,19 @@ impl Model for AnthropicModel {
 
         Box::pin(async move {
             info!(target: "provider", provider = "anthropic", model = %config.model, "streaming request");
-            let body = build_request_body(&config.model, &request);
+            let body = build_request_body(&config.model, &request, config.max_tokens);
             let mut last_error = None;
             for attempt in 1..=2 {
                 match client.post(config.messages_url()).json(&body).send().await {
                     Ok(response) => {
                         if !response.status().is_success() {
-                            let status = response.status();
+                            let status = response.status().as_u16();
                             let body = response.text().await.unwrap_or_default();
-                            return Err(ModelError::Stream(format!(
-                                "Anthropic request failed with {status}: {body}"
-                            )));
+                            let kind = crate::classify_error(status, &body, "anthropic");
+                            return Err(ModelError::Classified {
+                                kind,
+                                message: format!("Anthropic request failed with {status}: {body}"),
+                            });
                         }
                         let (tx, rx) = mpsc::unbounded_channel();
                         tokio::spawn(parse_sse_stream(response, tx));
@@ -164,11 +177,11 @@ impl Stream for ReceiverStream {
 // Request body construction (port of AnthropicMessages.fromRequest)
 // ---------------------------------------------------------------------------
 
-fn build_request_body(model: &str, request: &ModelRequest) -> Value {
+fn build_request_body(model: &str, request: &ModelRequest, max_tokens: Option<u64>) -> Value {
     let system = build_system(&request.messages);
     let messages = build_messages(&request.messages);
     let tools = build_tools(&request.tools);
-    let max_tokens = 4096;
+    let max_tokens = max_tokens.unwrap_or(4096);
 
     let mut body = serde_json::json!({
         "model": model,
@@ -209,7 +222,7 @@ fn build_system(messages: &[Message]) -> Option<Value> {
 }
 
 fn build_messages(messages: &[Message]) -> Vec<Value> {
-    let msgs = transform::normalize_messages(messages, "anthropic", "");
+    let msgs = transform::normalize_messages(messages, "anthropic", "", None);
 
     let mut result: Vec<Value> = Vec::new();
 
@@ -330,58 +343,40 @@ struct PartialToolCall {
 
 /// Streaming parser for the Anthropic Messages API SSE format.
 struct AnthropicSseParser {
-    buffer: String,
+    tokenizer: SseTokenizer,
     tool_calls: BTreeMap<usize, PartialToolCall>,
     pending_text: String,
     pending_reasoning: String,
     pending_reasoning_signature: Option<String>,
     current_block_index: Option<usize>,
+    pending_usage: Usage,
 }
 
 impl AnthropicSseParser {
     fn new() -> Self {
         Self {
-            buffer: String::new(),
+            tokenizer: SseTokenizer::new(),
             tool_calls: BTreeMap::new(),
             pending_text: String::new(),
             pending_reasoning: String::new(),
             pending_reasoning_signature: None,
             current_block_index: None,
+            pending_usage: Usage::default(),
         }
     }
 
     fn push(&mut self, chunk: &str) -> Vec<ParsedEvent> {
-        self.buffer.push_str(chunk);
         let mut events = Vec::new();
 
-        while let Some(delim) = self.buffer.find("\n\n") {
-            // Anthropic SSE uses \n\n as event delimiter but individual lines
-            // are separated by \n. Each event starts with `event: <type>` and
-            // has `data: {...}`.
-            let raw = self.buffer[..delim].to_string();
-            self.buffer.drain(..=delim + 1); // skip past \n\n
+        for event in self.tokenizer.push(chunk) {
+            let event_type = event.event_type.as_deref().unwrap_or("");
+            let data = event.data.trim();
 
-            // Parse event type and data
-            let event_type = raw
-                .lines()
-                .find(|l| l.starts_with("event:"))
-                .map(|l| l.trim_start_matches("event:").trim())
-                .unwrap_or("");
-
-            let data = raw
-                .lines()
-                .find(|l| l.starts_with("data:"))
-                .map(|l| l.trim_start_matches("data:").trim());
-
-            // For simpler parsing, try parsing the data as JSON directly
-            // (some implementations skip the `event:` prefix)
-            let json_str = data.unwrap_or(raw.trim());
-
-            if json_str.is_empty() || json_str == "{}" {
+            if data.is_empty() || data == "{}" {
                 continue;
             }
 
-            match self.parse_event(event_type, json_str) {
+            match self.parse_event(event_type, data) {
                 Ok(Some(parsed)) => events.push(parsed),
                 Ok(None) => {}
                 Err(e) => {
@@ -400,7 +395,7 @@ impl AnthropicSseParser {
             serde_json::from_str(data).map_err(|e| format!("invalid SSE JSON: {e}: {data}"))?;
 
         match event_type {
-            "message_start" | "message_start " => {
+            "message_start" => {
                 // Extract usage from message
                 if let Some(usage) = event.message.as_ref().and_then(|m| m.usage.as_ref()) {
                     let total_input = usage.input_tokens.unwrap_or(0)
@@ -414,7 +409,7 @@ impl AnthropicSseParser {
                 }
                 Ok(None)
             }
-            "content_block_start" | "content_block_start " => {
+            "content_block_start" => {
                 if let Some(block) = &event.content_block {
                     self.current_block_index = event.index;
                     match block.block_type.as_deref() {
@@ -428,7 +423,7 @@ impl AnthropicSseParser {
                                 self.pending_reasoning.push_str(thinking);
                             }
                         }
-                        Some("tool_use") | Some("tool_use ") => {
+                        Some("tool_use") => {
                             let idx = event.index.unwrap_or(0);
                             let id = block.id.clone().unwrap_or_default();
                             let name = block.name.clone().unwrap_or_default();
@@ -448,7 +443,7 @@ impl AnthropicSseParser {
                 }
                 Ok(None)
             }
-            "content_block_delta" | "content_block_delta " => {
+            "content_block_delta" => {
                 if let Some(delta) = &event.delta {
                     match delta.delta_type.as_deref() {
                         Some("text_delta") => {
@@ -479,7 +474,7 @@ impl AnthropicSseParser {
                 }
                 Ok(None)
             }
-            "content_block_stop" | "content_block_stop " => {
+            "content_block_stop" => {
                 // Check if we have a completed tool call at this index
                 if let Some(idx) = event.index
                     && let Some(tc) = self.tool_calls.remove(&idx)
@@ -498,17 +493,12 @@ impl AnthropicSseParser {
                 }
                 Ok(None)
             }
-            "message_delta" | "message_delta " => {
-                // Update usage from delta
-                if let Some(usage) = &event.usage {
-                    let total_input = usage.input_tokens.unwrap_or(0)
-                        + usage.cache_creation_input_tokens.unwrap_or(0)
-                        + usage.cache_read_input_tokens.unwrap_or(0);
-                    self.set_usage(Some(Usage {
-                        input_tokens: total_input,
-                        output_tokens: usage.output_tokens.unwrap_or(0),
-                        cache_hit_tokens: 0,
-                    }));
+            "message_delta" => {
+                // message_delta usage carries the cumulative output token count
+                if let Some(usage) = &event.usage
+                    && let Some(output) = usage.output_tokens
+                {
+                    self.pending_usage.output_tokens = output;
                 }
 
                 // Emit finish
@@ -524,7 +514,7 @@ impl AnthropicSseParser {
                     usage: self.take_usage(),
                 }))
             }
-            "error" | "error " => {
+            "error" => {
                 let msg = event
                     .error
                     .as_ref()
@@ -532,7 +522,7 @@ impl AnthropicSseParser {
                     .unwrap_or("unknown anthropic error");
                 Err(msg.to_string())
             }
-            "ping" | "ping " => Ok(None),
+            "ping" => Ok(None),
             _ => {
                 // Some providers (e.g. Bedrock) may not use the event: prefix.
                 // Try parsing type from the data itself.
@@ -578,12 +568,14 @@ impl AnthropicSseParser {
         if text.is_empty() { None } else { Some(text) }
     }
 
-    fn set_usage(&mut self, _usage: Option<Usage>) {
-        // Usage is stored on event boundary, emitted in Finish
+    fn set_usage(&mut self, usage: Option<Usage>) {
+        if let Some(usage) = usage {
+            self.pending_usage = usage;
+        }
     }
 
     fn take_usage(&mut self) -> Usage {
-        Usage::default()
+        std::mem::take(&mut self.pending_usage)
     }
 
     fn finish(&mut self) -> Vec<ParsedEvent> {
@@ -779,10 +771,10 @@ mod tests {
             }],
         };
 
-        let body = build_request_body("claude-sonnet-4-20250514", &request);
+        let body = build_request_body("claude-sonnet-4-20250514", &request, None);
         assert_eq!(body["model"], "claude-sonnet-4-20250514");
         assert_eq!(body["stream"], true);
-        assert!(body["max_tokens"].is_number());
+        assert_eq!(body["max_tokens"], 4096, "falls back to 4096 when limit unknown");
 
         // System should be at top level
         assert!(body.get("system").is_some());
@@ -790,6 +782,17 @@ mod tests {
         // Messages should contain user message
         let msgs = body["messages"].as_array().unwrap();
         assert!(!msgs.is_empty());
+    }
+
+    #[test]
+    fn max_tokens_comes_from_model_limit() {
+        let request = ModelRequest {
+            messages: vec![Message::user("hello")],
+            tools: vec![],
+        };
+
+        let body = build_request_body("claude-sonnet-4-20250514", &request, Some(16_384));
+        assert_eq!(body["max_tokens"], 16_384);
     }
 
     #[test]
@@ -812,9 +815,33 @@ mod tests {
         let mut parser = AnthropicSseParser::new();
         let data = r#"event: message_start
 data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+
 "#;
 
         let events = parser.push(data);
         assert!(events.is_empty()); // No content events
+    }
+
+    #[test]
+    fn carries_usage_into_finish_event() {
+        let mut parser = AnthropicSseParser::new();
+        parser.push(
+            r#"event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":1,"cache_creation_input_tokens":5,"cache_read_input_tokens":3}}}
+
+"#,
+        );
+        let events = parser.push(
+            r#"event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}
+
+"#,
+        );
+
+        assert!(matches!(
+            events.as_slice(),
+            [ParsedEvent::Finish { stop_reason: StopReason::Stop, usage }]
+                if usage.input_tokens == 18 && usage.output_tokens == 42
+        ));
     }
 }

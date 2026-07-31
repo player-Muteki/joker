@@ -66,15 +66,63 @@ pub enum ModelResponseEvent {
     },
 }
 
+/// Classification of a model-stream failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelErrorKind {
+    /// Authentication failed (bad or missing API key).
+    Auth,
+    /// The provider rate-limited the request (HTTP 429).
+    RateLimited,
+    /// Quota exhausted or billing problem (HTTP 402, `insufficient_quota`).
+    Quota,
+    /// The requested model does not exist.
+    ModelNotFound,
+    /// The request exceeded the model's context window.
+    ContextLength,
+    /// Transport or server failure (network error, HTTP 5xx).
+    Network,
+    /// Protocol-level failure (malformed SSE, unexpected payload).
+    Protocol,
+    /// No classification matched.
+    Unknown,
+}
+
 /// Errors that can occur during model streaming.
 #[derive(Debug, Error)]
 pub enum ModelError {
     /// The stream failed with the given message.
     #[error("model stream failed: {0}")]
     Stream(String),
+    /// The stream failed with a classified error kind.
+    #[error("{message}")]
+    Classified {
+        /// Classification of the failure.
+        kind: ModelErrorKind,
+        /// Human-readable failure message.
+        message: String,
+    },
     /// The request was cancelled.
     #[error("model was cancelled")]
     Cancelled,
+}
+
+impl ModelError {
+    /// Whether this error is worth retrying.
+    ///
+    /// Only network/transport failures are retried; authentication, quota,
+    /// rate-limit, and context-length failures will repeat and are surfaced
+    /// immediately. Unclassified stream errors are retried to preserve legacy
+    /// behavior.
+    #[must_use]
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            ModelError::Classified { kind, .. } => {
+                matches!(kind, ModelErrorKind::Network)
+            }
+            ModelError::Stream(_) => true,
+            ModelError::Cancelled => false,
+        }
+    }
 }
 
 /// A [`Model`] that returns pre-scripted [`ScriptedStep`]s.

@@ -1,12 +1,16 @@
 //! Provider selection — maps provider names to routes or scripted mode.
 
-use joker_provider::{ALIBABA, ANTHROPIC, BAIDU, DEEPSEEK, GOOGLE, MOONSHOT, Route, ZHIPUAI};
+use joker_provider::{Auth, Framing, Protocol, Route, preset_spec};
 use tracing::info;
-
 use crate::error::ConfigError;
 
 /// Represents the active provider: either a scripted echo provider or a routed LLM.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// The `Route` variant intentionally carries the full provider spec (catalog
+/// capabilities, limits, and options) so request construction can be driven by
+/// catalog data — hence its large size.
+#[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum ProviderSelection {
     /// Scripted mode returns a fixed response without calling any LLM.
     Scripted {
@@ -27,28 +31,26 @@ impl ProviderSelection {
     }
 
     /// Select a provider by its well-known name (e.g. `"deepseek"`, `"anthropic"`, `"openai-compatible"`).
+    ///
+    /// Built-in providers resolve through the [`preset_spec`] catalog, which
+    /// supplies the base URL, auth convention, and default model.
     pub fn preset(provider: &str) -> Result<Self, ConfigError> {
         info!(target: "config", provider = %provider, "selecting provider");
         match provider.trim().to_ascii_lowercase().as_str() {
             "" | "scripted" => Ok(Self::scripted()),
-            "deepseek" => Ok(Self::Route(DEEPSEEK.into_route(Some("deepseek-chat")))),
-            "anthropic" => Ok(Self::Route(
-                ANTHROPIC.into_route(Some("claude-sonnet-4-20250514")),
-            )),
-            "google" => Ok(Self::Route(GOOGLE.into_route(Some("gemini-2-5-flash")))),
-            "alibaba" | "dashscope" => Ok(Self::Route(ALIBABA.into_route(Some("qwen-plus")))),
-            "zhipuai" | "glm" => Ok(Self::Route(ZHIPUAI.into_route(Some("glm-4-plus")))),
-            "moonshot" | "kimi" => Ok(Self::Route(MOONSHOT.into_route(Some("kimi-k2.5")))),
-            "baidu" | "ernie" => Ok(Self::Route(BAIDU.into_route(Some("ernie-4.0")))),
             "openai-compatible" | "custom" => Ok(Self::Route(Route {
                 id: "openai-compatible".into(),
-                protocol: joker_provider::Protocol::ChatCompletions,
+                protocol: Protocol::ChatCompletions,
                 base_url: "http://localhost:8000/v1".into(),
-                auth: joker_provider::Auth::bearer_from_env("OPENAI_COMPATIBLE_API_KEY"),
-                framing: joker_provider::Framing::Sse,
+                auth: Auth::bearer_from_env("OPENAI_COMPATIBLE_API_KEY"),
+                framing: Framing::Sse,
                 default_model: "model".into(),
+                spec: None,
+                credential_store: None,
             })),
-            other => Err(ConfigError::UnknownProvider(other.into())),
+            name => preset_spec(name)
+                .map(|spec| Self::Route(Route::from_spec(spec, None)))
+                .ok_or_else(|| ConfigError::UnknownProvider(provider.into())),
         }
     }
 }

@@ -239,10 +239,15 @@ impl Agent {
                     .await
                 {
                     Ok(stream) => stream,
-                    Err(ModelError::Stream(reason)) => {
+                    Err(ModelError::Cancelled) => return Err(RunError::Cancelled),
+                    Err(error) => {
+                        if !error.is_retryable() {
+                            return Err(RunError::Model(error));
+                        }
+                        let reason = error.to_string();
                         stream_errors += 1;
                         if stream_errors > cfg.max_stream_retries {
-                            return Err(RunError::Model(ModelError::Stream(reason)));
+                            return Err(RunError::Model(error));
                         }
                         observe(
                             &self.observer,
@@ -259,7 +264,6 @@ impl Agent {
                         .await;
                         continue;
                     }
-                    Err(ModelError::Cancelled) => return Err(RunError::Cancelled),
                 };
 
                 let output =

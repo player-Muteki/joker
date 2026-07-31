@@ -1,15 +1,17 @@
 //! Model discovery and vendor detection.
 //!
-//! Utilities for fetching available model IDs from a provider's API,
-//! identifying the vendor from a base URL, and guessing the correct
-//! [`Protocol`](crate::protocol::Protocol), [`Framing`](crate::protocol::Framing),
-//! and [`Auth`](crate::protocol::Auth) for a given endpoint.
+//! Utilities for fetching available models from a provider's API —
+//! dispatching on the wire [`Protocol`] — identifying the vendor from a base
+//! URL, and guessing the correct [`Protocol`](crate::protocol::Protocol),
+//! [`Framing`](crate::protocol::Framing), and [`Auth`](crate::protocol::Auth)
+//! for an unknown endpoint.
 
 use serde::Deserialize;
 
 use crate::protocol::{Auth, Framing, Protocol};
+use crate::spec::ModelInfo;
 
-/// Response from an OpenAI-compatible `/v1/models` endpoint.
+/// OpenAI/Anthropic-compatible `/models` response shape.
 #[derive(Deserialize)]
 struct ModelsResponse {
     data: Vec<ModelEntry>,
@@ -20,45 +22,132 @@ struct ModelEntry {
     id: String,
 }
 
-/// Fetch available model IDs from a provider's API.
+/// Google Gemini `models.list` response shape.
+#[derive(Deserialize)]
+struct GoogleModelsResponse {
+    models: Option<Vec<GoogleModelEntry>>,
+}
+
+#[derive(Deserialize)]
+struct GoogleModelEntry {
+    #[serde(rename = "name")]
+    name: String,
+}
+
+/// Fetch available models from a provider's API, dispatching on protocol.
 ///
-/// Tries several candidate URL patterns derived from `base_url` and returns
-/// the model IDs from the first successful response.
-pub async fn discover_models(base_url: &str, auth: &Auth) -> Result<Vec<String>, String> {
-    let candidates = build_model_fetch_urls(base_url);
+/// - ChatCompletions tries several candidate URL patterns derived from
+///   `base_url` (OpenAI-style `/v1/models`).
+/// - AnthropicMessages queries `{base}/models` with the auth header.
+/// - GoogleGemini queries `{base}/v1beta/models` with the auth header.
+pub async fn discover_models(
+    base_url: &str,
+    auth: &Auth,
+    protocol: &Protocol,
+) -> Result<Vec<ModelInfo>, String> {
+    let client = reqwest::Client::builder()
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
 
-    for url in &candidates {
-        let client = reqwest::Client::builder()
-            .build()
-            .map_err(|e| format!("failed to build HTTP client: {e}"))?;
-
-        let mut req = client.get(url);
-
-        if let Some((header, value)) = auth.header_value() {
-            req = req.header(&header, &value);
+    match protocol {
+        Protocol::ChatCompletions => {
+            let candidates = build_model_fetch_urls(base_url);
+            for url in &candidates {
+                let mut req = client.get(url);
+                if let Some((header, value)) = auth.header_value() {
+                    req = req.header(&header, &value);
+                }
+                match req.send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        let body = resp
+                            .text()
+                            .await
+                            .map_err(|e| format!("failed to read models response from {url}: {e}"))?;
+                        return parse_models_response(&body)
+                            .map_err(|e| format!("{e} (from {url})"));
+                    }
+                    Ok(resp) if url == candidates.last().unwrap() => {
+                        return Err(format!(
+                            "model discovery failed for all candidates; last attempt ({url}): {}",
+                            resp.status()
+                        ));
+                    }
+                    _ => continue,
+                }
+            }
+            Err(format!(
+                "no candidate model URLs worked for base_url: {base_url}"
+            ))
         }
-
-        match req.send().await {
-            Ok(resp) if resp.status().is_success() => {
-                let body: ModelsResponse = resp
-                    .json()
-                    .await
-                    .map_err(|e| format!("failed to parse models response from {url}: {e}"))?;
-                return Ok(body.data.into_iter().map(|e| e.id).collect());
+        Protocol::AnthropicMessages => {
+            let url = format!("{}/models", base_url.trim_end_matches('/'));
+            let mut req = client.get(&url);
+            if let Some((header, value)) = auth.header_value() {
+                req = req.header(&header, &value);
             }
-            Ok(resp) if url == candidates.last().unwrap() => {
-                return Err(format!(
-                    "model discovery failed for all candidates; last attempt ({url}): {}",
-                    resp.status()
-                ));
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| format!("model discovery request to {url} failed: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!("model discovery failed ({url}): {}", resp.status()));
             }
-            _ => continue,
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| format!("failed to read models response from {url}: {e}"))?;
+            parse_models_response(&body)
+        }
+        Protocol::GoogleGemini => {
+            let url = format!("{}/v1beta/models", base_url.trim_end_matches('/'));
+            let mut req = client.get(&url);
+            if let Some((header, value)) = auth.header_value() {
+                req = req.header(&header, &value);
+            }
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| format!("model discovery request to {url} failed: {e}"))?;
+            if !resp.status().is_success() {
+                return Err(format!("model discovery failed ({url}): {}", resp.status()));
+            }
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| format!("failed to read models response from {url}: {e}"))?;
+            parse_google_models_response(&body)
         }
     }
+}
 
-    Err(format!(
-        "no candidate model URLs worked for base_url: {base_url}"
-    ))
+/// Parse an OpenAI/Anthropic-style models response (`{"data": [{"id": ...}]}`).
+fn parse_models_response(json: &str) -> Result<Vec<ModelInfo>, String> {
+    let body: ModelsResponse = serde_json::from_str(json)
+        .map_err(|e| format!("failed to parse models response: {e}"))?;
+    Ok(body
+        .data
+        .into_iter()
+        .map(|entry| ModelInfo {
+            id: entry.id,
+            ..Default::default()
+        })
+        .collect())
+}
+
+/// Parse a Google models response (`{"models": [{"name": "models/..."}]}`).
+fn parse_google_models_response(json: &str) -> Result<Vec<ModelInfo>, String> {
+    let body: GoogleModelsResponse = serde_json::from_str(json)
+        .map_err(|e| format!("failed to parse models response: {e}"))?;
+    Ok(body
+        .models
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| entry.name.strip_prefix("models/").map(String::from))
+        .map(|id| ModelInfo {
+            id,
+            ..Default::default()
+        })
+        .collect())
 }
 
 fn build_model_fetch_urls(base_url: &str) -> Vec<String> {
@@ -84,7 +173,8 @@ fn build_model_fetch_urls(base_url: &str) -> Vec<String> {
 
 /// Identify the vendor name from a base URL by matching known host patterns.
 ///
-/// Returns `"unknown"` when no vendor is recognised.
+/// Returns `"unknown"` when no vendor is recognised. Known vendors can be
+/// mapped to catalog data via [`preset_spec`](crate::catalog::preset_spec).
 pub fn detect_vendor(base_url: &str) -> &'static str {
     let host = base_url
         .trim_start_matches("https://")
@@ -159,10 +249,101 @@ pub fn guess_auth(protocol: &Protocol) -> Auth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{AuthScheme, CredentialSource};
+    use crate::spec::ModelStatus;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// Serve `body` as an HTTP response on a loopback listener; returns the base URL.
+    fn fake_server(body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = match stream {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn keyed_auth(header: &str) -> Auth {
+        Auth {
+            scheme: AuthScheme::ApiKey {
+                header: header.into(),
+            },
+            credentials: CredentialSource::Value("sk-test".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn discovers_openai_compatible_models() {
+        let base = fake_server(r#"{"data":[{"id":"deepseek-chat"},{"id":"deepseek-reasoner"}]}"#);
+        let models = discover_models(&base, &Auth::none(), &Protocol::ChatCompletions)
+            .await
+            .expect("discover");
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["deepseek-chat", "deepseek-reasoner"]);
+    }
+
+    #[tokio::test]
+    async fn discovers_anthropic_models() {
+        let base = fake_server(r#"{"data":[{"id":"claude-sonnet-4-20250514"}],"has_more":false}"#);
+        let models =
+            discover_models(&base, &keyed_auth("x-api-key"), &Protocol::AnthropicMessages)
+                .await
+                .expect("discover");
+        assert_eq!(models[0].id, "claude-sonnet-4-20250514");
+        assert_eq!(models[0].status, ModelStatus::Available);
+    }
+
+    #[tokio::test]
+    async fn discovers_google_models() {
+        let base = fake_server(
+            r#"{"models":[{"name":"models/gemini-2-5-flash"},{"name":"models/gemini-2-5-pro"}]}"#,
+        );
+        let models = discover_models(&base, &keyed_auth("x-goog-api-key"), &Protocol::GoogleGemini)
+            .await
+            .expect("discover");
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["gemini-2-5-flash", "gemini-2-5-pro"]);
+    }
+
+    #[test]
+    fn parses_google_models_response() {
+        let models = parse_google_models_response(
+            r#"{"models":[{"name":"models/gemini-2-5-flash"},{"name":"publisherModels/x"}]}"#,
+        )
+        .expect("parse");
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["gemini-2-5-flash"], "publisherModels are excluded");
+    }
+
+    #[test]
+    fn parses_empty_google_models() {
+        let models = parse_google_models_response(r#"{"models":[]}"#).expect("parse");
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn rejects_malformed_models_response() {
+        assert!(parse_models_response(r#"{"nope":true}"#).is_err());
+    }
 
     #[tokio::test]
     async fn discover_models_fallback_no_network() {
-        let result = discover_models("http://127.0.0.1:1", &Auth::none()).await;
+        let result =
+            discover_models("http://127.0.0.1:1", &Auth::none(), &Protocol::ChatCompletions)
+                .await;
         assert!(result.is_err(), "should fail on unreachable endpoint");
     }
 

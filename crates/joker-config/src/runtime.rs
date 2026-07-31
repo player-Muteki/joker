@@ -14,7 +14,7 @@ use crate::provider_selection::ProviderSelection;
 use crate::types::{AgentProfileConfig, FileConfig, McpServerConfig};
 
 /// The resolved configuration used throughout the application at runtime.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeConfig {
     /// The active provider selection (scripted or a routed LLM provider).
     pub provider: ProviderSelection,

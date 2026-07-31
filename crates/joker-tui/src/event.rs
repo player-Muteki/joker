@@ -12,8 +12,8 @@ pub enum UiEvent {
     Agent(joker::Event),
     /// An agent run finished with the given outcome or error.
     RunCompleted(Result<joker::RunOutcome, String>),
-    /// Model-discovery request completed.
-    ModelDiscoveryCompleted(Result<Vec<String>, String>),
+    /// Model-discovery request completed (per-vendor model catalog entries).
+    ModelDiscoveryCompleted(Result<Vec<joker_provider::ModelInfo>, String>),
     /// Raw terminal event (key, resize, etc.).
     Terminal(crossterm::event::Event),
     /// Periodic tick used for timed screen updates.

@@ -8,12 +8,37 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use joker::SharedApprovalChannel;
-use joker_config::RuntimeConfig;
+use joker_config::{ProviderSelection, RuntimeConfig};
 use std::fmt;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::event::UiEvent;
+
+/// Model IDs from a provider's catalog, for the `/model` picker.
+///
+/// Consults the route's own spec first, falling back to the built-in
+/// catalog by route id; disabled models are filtered out. Routes without a
+/// catalog (scripted, unknown endpoints) fall back to the resolved models.
+#[must_use]
+pub(crate) fn catalog_models(runtime_config: &RuntimeConfig) -> Vec<String> {
+    let ProviderSelection::Route(route) = &runtime_config.provider else {
+        return runtime_config.available_models();
+    };
+    let spec = route
+        .spec
+        .as_ref()
+        .or_else(|| joker_provider::preset_spec(&route.id));
+    match spec {
+        Some(spec) => spec
+            .models
+            .iter()
+            .filter(|(_, info)| info.status != joker_provider::ModelStatus::Disabled)
+            .map(|(id, _)| id.clone())
+            .collect(),
+        None => runtime_config.available_models(),
+    }
+}
 
 /// Central application state for the Joker TUI.
 #[derive(Clone)]
@@ -167,7 +192,7 @@ impl App {
     pub fn with_config(runtime_config: RuntimeConfig) -> Self {
         let status = format!("Idle ({})", runtime_config.provider_label());
         let agent_names = vec!["plan".into(), "build".into(), "yolo".into()];
-        let available_models = runtime_config.available_models();
+        let available_models = catalog_models(&runtime_config);
         Self {
             composer: String::new(),
             cursor: 0,
@@ -594,8 +619,17 @@ impl App {
             }
             UiEvent::ModelDiscoveryCompleted(result) => match result {
                 Ok(models) => {
-                    if !models.is_empty() {
-                        self.available_models = models;
+                    let mut merged = catalog_models(&self.runtime_config);
+                    merged.extend(
+                        models
+                            .into_iter()
+                            .filter(|m| m.status != joker_provider::ModelStatus::Disabled)
+                            .map(|m| m.id),
+                    );
+                    merged.sort();
+                    merged.dedup();
+                    if !merged.is_empty() {
+                        self.available_models = merged;
                     }
                     self.transcript.push(TranscriptItem::Status(format!(
                         "Discovered {} model(s).",
