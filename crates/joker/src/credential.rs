@@ -229,7 +229,10 @@ mod tests {
     #[test]
     fn get_with_env_returns_none_when_nothing_resolves() {
         let store = CredentialStore::new();
-        assert_eq!(store.get_with_env_using("myllm", Some("JKR_TEST_UNSET"), fake_env(&[])), None);
+        assert_eq!(
+            store.get_with_env_using("myllm", Some("JKR_TEST_UNSET"), fake_env(&[])),
+            None
+        );
     }
 
     #[test]

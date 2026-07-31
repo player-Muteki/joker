@@ -7,7 +7,8 @@ automation.
 ## What Works
 
 - Interactive TUI with streaming assistant output, slash commands, sessions,
-  provider/model switching, and approval prompts.
+  catalog-driven provider/model switching (with live model discovery), and
+  approval prompts.
 - Headless `exec` mode that runs one prompt and prints the final assistant
   response.
 - Project-local `joker.toml` configuration with CLI overrides.
@@ -80,7 +81,7 @@ export DEEPSEEK_API_KEY=sk-...
 joker --provider deepseek --model deepseek-chat
 ```
 
-Use a custom OpenAI-compatible endpoint:
+Use a custom OpenAI-compatible endpoint from the command line:
 
 ```bash
 joker --provider openai-compatible \
@@ -89,8 +90,11 @@ joker --provider openai-compatible \
   --api-key-env LOCAL_LLM_API_KEY
 ```
 
+The same endpoint can be defined once in `joker.toml` (see
+[Configuration](#configuration)) so every invocation picks it up.
+
 Non-interactive `exec` fails early if the selected provider needs an API key
-that is not present in the environment.
+that is not present in the environment or the credential store.
 
 ## Configuration
 
@@ -108,15 +112,46 @@ permission = "auto-accept"
 permission = "ask"
 ```
 
+Custom providers are defined in `[providers.<name>]`, following opencode's
+`provider.<id>` shape. The wire protocol is set by `kind` (or `protocol`):
+`"openai-compatible"`, `"anthropic"`, or `"google"`.
+
+```toml
+provider = "local"
+model = "qwen"
+
+[providers.local]
+kind = "openai-compatible"   # or "anthropic" / "google"
+base_url = "http://localhost:8000/v1"
+model = "qwen"
+api_key_env = "LOCAL_LLM_API_KEY"
+
+[providers.local.options]
+timeout = 60
+headers = { "X-Custom" = "trace-123" }
+
+[providers.local.models.qwen]
+max_tokens = 4096
+temperature = true
+toolcall = true
+reasoning = false
+```
+
+`options` applies provider-wide request settings; each `models.<id>` entry
+declares per-model capabilities (temperature, tool calls, reasoning, token
+limits) that drive the request clients.
+
 CLI flags override the file for a single invocation:
 
 ```bash
 joker --config ./configs/joker.toml --provider scripted
 ```
 
-Secrets are not stored in `joker.toml`; providers read credentials from
+Secrets are never stored in `joker.toml`. Headless runs read credentials from
 environment variables such as `DEEPSEEK_API_KEY`, `ANTHROPIC_API_KEY`, or a
-custom `--api-key-env`.
+custom `--api-key-env`. In the TUI, entering an API key through the provider
+prompt persists it to `~/.joker/auth.json`; stored keys take precedence over
+environment variables.
 
 ## Safety Model
 
@@ -146,4 +181,10 @@ Format Rust code:
 
 ```bash
 cargo fmt
+```
+
+Build the release binary (produced at `target/release/joker`):
+
+```bash
+cargo build --release -p joker-tui
 ```
