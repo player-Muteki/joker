@@ -151,6 +151,54 @@ async fn op_switch_agent_emits_agent_switched() {
 }
 
 #[tokio::test]
+async fn runtime_handle_sends_control_ops() {
+    let observer = RecordingObserver::new();
+    let model = Arc::new(ScriptedModel::new([
+        ScriptedStep::tool_call("call-1", "echo", serde_json::json!({"text": "hi"})),
+        ScriptedStep::text("done"),
+    ])) as Arc<dyn joker::Model>;
+    let agent = Agent::new(model).with_observer(Arc::new(observer.clone()));
+    let runtime = AgentRuntime::new(agent);
+
+    let (handle, join) = runtime.spawn(RunRequest::new("test"));
+    handle.compact().unwrap();
+    handle
+        .switch_agent("plan")
+        .expect("runtime should accept switch op");
+    drop(handle);
+
+    let _ = join.await.unwrap();
+
+    let events = observer.events();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, joker::Event::CompactionStarted { .. })),
+        "handle compact should emit CompactionStarted"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, joker::Event::AgentSwitched { to, .. } if to == "plan")),
+        "handle switch_agent should emit AgentSwitched"
+    );
+}
+
+#[tokio::test]
+async fn runtime_handle_reports_closed_channel() {
+    let observer = RecordingObserver::new();
+    let model = Arc::new(ScriptedModel::new([ScriptedStep::text("done")])) as Arc<dyn joker::Model>;
+    let agent = Agent::new(model).with_observer(Arc::new(observer));
+    let runtime = AgentRuntime::new(agent);
+
+    let (handle, join) = runtime.spawn(RunRequest::new("test"));
+    let _ = join.await.unwrap().unwrap();
+
+    let err = handle.cancel().unwrap_err();
+    assert_eq!(err, joker::RuntimeHandleError::Closed);
+}
+
+#[tokio::test]
 async fn old_agent_run_api_still_works() {
     let observer = RecordingObserver::new();
     let model =

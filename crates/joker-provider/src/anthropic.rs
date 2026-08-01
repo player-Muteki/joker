@@ -774,7 +774,10 @@ mod tests {
         let body = build_request_body("claude-sonnet-4-20250514", &request, None);
         assert_eq!(body["model"], "claude-sonnet-4-20250514");
         assert_eq!(body["stream"], true);
-        assert_eq!(body["max_tokens"], 4096, "falls back to 4096 when limit unknown");
+        assert_eq!(
+            body["max_tokens"], 4096,
+            "falls back to 4096 when limit unknown"
+        );
 
         // System should be at top level
         assert!(body.get("system").is_some());

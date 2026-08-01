@@ -100,8 +100,7 @@ impl GoogleModel {
                 .map_err(|_| GoogleProviderError::InvalidHeader(name.clone()))?;
             headers.insert(
                 parsed,
-                HeaderValue::from_str(value)
-                    .map_err(|_| GoogleProviderError::InvalidAuthHeader)?,
+                HeaderValue::from_str(value).map_err(|_| GoogleProviderError::InvalidAuthHeader)?,
             );
         }
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));

@@ -182,7 +182,9 @@ pub fn preset_spec(id: &str) -> Option<&'static ProviderSpec> {
 }
 
 /// Build a single-model catalog entry from a capability tuple.
-fn spec_models(entries: &[(&str, ModelCapabilities, u64, u64)]) -> std::collections::BTreeMap<String, ModelInfo> {
+fn spec_models(
+    entries: &[(&str, ModelCapabilities, u64, u64)],
+) -> std::collections::BTreeMap<String, ModelInfo> {
     entries
         .iter()
         .map(|(id, caps, context, max_output)| {
@@ -209,7 +211,15 @@ mod tests {
 
     #[test]
     fn presets_resolve_to_routes() {
-        for id in ["deepseek", "anthropic", "google", "alibaba", "zhipuai", "moonshot", "baidu"] {
+        for id in [
+            "deepseek",
+            "anthropic",
+            "google",
+            "alibaba",
+            "zhipuai",
+            "moonshot",
+            "baidu",
+        ] {
             let spec = preset_spec(id).expect("preset exists");
             assert!(!spec.base_url.is_empty());
             assert!(!spec.models.is_empty(), "{id} has a model catalog");

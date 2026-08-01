@@ -220,8 +220,14 @@ mod tests {
             options: ProviderOptions::default(),
             models: BTreeMap::new(),
         };
-        assert_eq!(chat.default_auth().credentials, crate::protocol::CredentialSource::EnvVar("X_API_KEY".into()));
-        assert_eq!(chat.default_auth().scheme, crate::protocol::AuthScheme::Bearer);
+        assert_eq!(
+            chat.default_auth().credentials,
+            crate::protocol::CredentialSource::EnvVar("X_API_KEY".into())
+        );
+        assert_eq!(
+            chat.default_auth().scheme,
+            crate::protocol::AuthScheme::Bearer
+        );
 
         let anthropic = ProviderSpec {
             id: "anthropic".into(),

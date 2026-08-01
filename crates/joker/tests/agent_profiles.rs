@@ -1,7 +1,10 @@
+use std::collections::BTreeMap;
+
 use joker::{
-    PermissionDecision, PermissionEngine, PermissionSetting, ToolAnnotations, ToolDefinition,
-    ToolExecution, ToolFn, ToolFuture, ToolInvocation, ToolName, ToolOutput, ToolRegistry,
-    builtin_agent_profiles, builtin_constraint_file_content,
+    AgentProfileCatalog, AgentProfileSpec, AgentToolPermissionSpec, PermissionDecision,
+    PermissionEngine, PermissionSetting, ToolAnnotations, ToolDefinition, ToolExecution, ToolFn,
+    ToolFuture, ToolInvocation, ToolName, ToolOutput, ToolRegistry, builtin_agent_profiles,
+    builtin_constraint_file_content,
 };
 use serde_json::json;
 
@@ -418,7 +421,77 @@ fn test_builtin_constraint_file_content_unknown() {
     assert_eq!(builtin_constraint_file_content("unknown"), "");
 }
 
-// ── Plan hard-permission path rules (MiMo-Code style) ──────────────────────
+// ── Agent profile catalog ───────────────────────────────────────────────────
+
+#[test]
+fn test_agent_profile_catalog_materializes_builtin_and_configured_profiles() {
+    let agents_dir = std::path::Path::new("/tmp/.joker/agents");
+    let catalog = AgentProfileCatalog::new(agents_dir).with_profile(
+        "review",
+        AgentProfileSpec {
+            model: Some("review-model".into()),
+            system: Some("You review code.".into()),
+            tools: BTreeMap::from([
+                (
+                    "read_file".into(),
+                    AgentToolPermissionSpec {
+                        enabled: None,
+                        permission: Some("auto-accept".into()),
+                    },
+                ),
+                (
+                    "write_file".into(),
+                    AgentToolPermissionSpec {
+                        enabled: Some(false),
+                        permission: None,
+                    },
+                ),
+            ]),
+        },
+    );
+
+    let profiles = catalog.permissions();
+    let names: Vec<&str> = profiles.iter().map(|p| p.agent_name.as_str()).collect();
+    assert_eq!(names, vec!["plan", "build", "yolo", "review"]);
+
+    let review = find_profile(&profiles, "review");
+    assert_eq!(review.model.as_deref(), Some("review-model"));
+    check_perm(review, "read_file", PermissionSetting::AutoAccept);
+    check_perm(review, "write_file", PermissionSetting::Disabled);
+    assert!(review.constraint_file.ends_with("review_agent.md"));
+}
+
+#[test]
+fn test_agent_profile_catalog_writes_missing_builtin_constraints_without_overwrite() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let agents_dir = temp_dir.path().join("agents");
+    std::fs::create_dir_all(&agents_dir).unwrap();
+    let plan_path = agents_dir.join("plan_agent.md");
+    std::fs::write(&plan_path, "custom plan").unwrap();
+
+    let catalog = AgentProfileCatalog::new(&agents_dir);
+    catalog.ensure_builtin_constraint_files().unwrap();
+
+    assert_eq!(std::fs::read_to_string(plan_path).unwrap(), "custom plan");
+    assert!(agents_dir.join("build_agent.md").exists());
+    assert!(agents_dir.join("yolo_agent.md").exists());
+}
+
+#[test]
+fn test_agent_profile_catalog_uses_configured_system_prompt() {
+    let catalog = AgentProfileCatalog::new("/tmp/.joker/agents").with_profile(
+        "review",
+        AgentProfileSpec {
+            system: Some("Review only changed code.".into()),
+            ..AgentProfileSpec::default()
+        },
+    );
+
+    let prompt = catalog.system_prompt("review", Some("Project facts"), Some("Memory facts"));
+    assert!(prompt.contains("## Project Context\n\nProject facts"));
+    assert!(prompt.contains("Review only changed code."));
+    assert!(prompt.contains("## Memory\n\nMemory facts"));
+}
 
 #[test]
 fn test_plan_hard_permission_path_rule_allows_plans_md() {

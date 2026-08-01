@@ -376,6 +376,15 @@ fn handle_dialog_confirm(
             }
         }
         DialogKind::AgentSwitch => {
+            if app.running
+                && let Some(handle) = &app.runtime_handle
+            {
+                if let Err(error) = handle.switch_agent(selection) {
+                    app.transcript
+                        .push(TranscriptItem::Error(error.to_string()));
+                    return;
+                }
+            }
             app.active_agent = selection.to_string();
             driver.set_active_agent(selection.to_string());
             app.transcript.push(TranscriptItem::Status(format!(
@@ -446,12 +455,10 @@ fn spawn_model_discovery(app: &App, tx: mpsc::UnboundedSender<UiEvent>) {
     let route = route.clone();
     // Resolve credentials through the unified chain so stored keys work
     // for discovery as well as for model construction.
-    let auth =
-        joker_provider::resolve_auth(&route.id, &route.auth, Some(&app.credential_store));
+    let auth = joker_provider::resolve_auth(&route.id, &route.auth, Some(&app.credential_store));
     let protocol = route.protocol.clone();
     tokio::spawn(async move {
-        let result =
-            joker_provider::discover_models(&route.base_url, &auth, &protocol).await;
+        let result = joker_provider::discover_models(&route.base_url, &auth, &protocol).await;
         let _ = tx.send(UiEvent::ModelDiscoveryCompleted(result));
     });
 }
@@ -482,13 +489,19 @@ fn spawn_agent_run(
         driver.spawn_run(prompt, cancellation_token, tx, approval_channel)
     };
 
-    if let Err(error) = run_result {
-        app.running = false;
-        app.cancellation_token = None;
-        app.approval_channel = None;
-        app.status = "Error".into();
-        app.transcript
-            .push(crate::app::TranscriptItem::Error(error.to_string()));
+    match run_result {
+        Ok(spawned) => {
+            app.runtime_handle = Some(spawned.runtime);
+        }
+        Err(error) => {
+            app.running = false;
+            app.cancellation_token = None;
+            app.runtime_handle = None;
+            app.approval_channel = None;
+            app.status = "Error".into();
+            app.transcript
+                .push(crate::app::TranscriptItem::Error(error.to_string()));
+        }
     }
 }
 

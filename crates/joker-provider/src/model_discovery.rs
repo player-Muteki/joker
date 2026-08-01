@@ -59,10 +59,9 @@ pub async fn discover_models(
                 }
                 match req.send().await {
                     Ok(resp) if resp.status().is_success() => {
-                        let body = resp
-                            .text()
-                            .await
-                            .map_err(|e| format!("failed to read models response from {url}: {e}"))?;
+                        let body = resp.text().await.map_err(|e| {
+                            format!("failed to read models response from {url}: {e}")
+                        })?;
                         return parse_models_response(&body)
                             .map_err(|e| format!("{e} (from {url})"));
                     }
@@ -122,8 +121,8 @@ pub async fn discover_models(
 
 /// Parse an OpenAI/Anthropic-style models response (`{"data": [{"id": ...}]}`).
 fn parse_models_response(json: &str) -> Result<Vec<ModelInfo>, String> {
-    let body: ModelsResponse = serde_json::from_str(json)
-        .map_err(|e| format!("failed to parse models response: {e}"))?;
+    let body: ModelsResponse =
+        serde_json::from_str(json).map_err(|e| format!("failed to parse models response: {e}"))?;
     Ok(body
         .data
         .into_iter()
@@ -136,8 +135,8 @@ fn parse_models_response(json: &str) -> Result<Vec<ModelInfo>, String> {
 
 /// Parse a Google models response (`{"models": [{"name": "models/..."}]}`).
 fn parse_google_models_response(json: &str) -> Result<Vec<ModelInfo>, String> {
-    let body: GoogleModelsResponse = serde_json::from_str(json)
-        .map_err(|e| format!("failed to parse models response: {e}"))?;
+    let body: GoogleModelsResponse =
+        serde_json::from_str(json).map_err(|e| format!("failed to parse models response: {e}"))?;
     Ok(body
         .models
         .unwrap_or_default()
@@ -298,10 +297,13 @@ mod tests {
     #[tokio::test]
     async fn discovers_anthropic_models() {
         let base = fake_server(r#"{"data":[{"id":"claude-sonnet-4-20250514"}],"has_more":false}"#);
-        let models =
-            discover_models(&base, &keyed_auth("x-api-key"), &Protocol::AnthropicMessages)
-                .await
-                .expect("discover");
+        let models = discover_models(
+            &base,
+            &keyed_auth("x-api-key"),
+            &Protocol::AnthropicMessages,
+        )
+        .await
+        .expect("discover");
         assert_eq!(models[0].id, "claude-sonnet-4-20250514");
         assert_eq!(models[0].status, ModelStatus::Available);
     }
@@ -311,9 +313,13 @@ mod tests {
         let base = fake_server(
             r#"{"models":[{"name":"models/gemini-2-5-flash"},{"name":"models/gemini-2-5-pro"}]}"#,
         );
-        let models = discover_models(&base, &keyed_auth("x-goog-api-key"), &Protocol::GoogleGemini)
-            .await
-            .expect("discover");
+        let models = discover_models(
+            &base,
+            &keyed_auth("x-goog-api-key"),
+            &Protocol::GoogleGemini,
+        )
+        .await
+        .expect("discover");
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, vec!["gemini-2-5-flash", "gemini-2-5-pro"]);
     }
@@ -325,7 +331,11 @@ mod tests {
         )
         .expect("parse");
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, vec!["gemini-2-5-flash"], "publisherModels are excluded");
+        assert_eq!(
+            ids,
+            vec!["gemini-2-5-flash"],
+            "publisherModels are excluded"
+        );
     }
 
     #[test]
@@ -341,9 +351,12 @@ mod tests {
 
     #[tokio::test]
     async fn discover_models_fallback_no_network() {
-        let result =
-            discover_models("http://127.0.0.1:1", &Auth::none(), &Protocol::ChatCompletions)
-                .await;
+        let result = discover_models(
+            "http://127.0.0.1:1",
+            &Auth::none(),
+            &Protocol::ChatCompletions,
+        )
+        .await;
         assert!(result.is_err(), "should fail on unreachable endpoint");
     }
 

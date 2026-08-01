@@ -11,10 +11,179 @@
 //! The plan agent uses `hard_permission: Disabled` on all mutating tools,
 //! making the restriction non-overridable by user config or session grants.
 
-use std::collections::HashMap;
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs, io,
+    path::PathBuf,
+};
 
 use crate::permission_engine::{AgentPermission, HardPermissionRule, PermissionSetting};
 use crate::tool::ToolName;
+
+/// Catalog of built-in and configured agent profiles.
+#[derive(Clone, Debug)]
+pub struct AgentProfileCatalog {
+    agents_dir: PathBuf,
+    profiles: BTreeMap<String, AgentProfileSpec>,
+}
+
+/// Config-neutral agent profile specification.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentProfileSpec {
+    /// Override model for this agent.
+    pub model: Option<String>,
+    /// System prompt for this agent.
+    pub system: Option<String>,
+    /// Per-tool permission overrides keyed by tool name.
+    pub tools: BTreeMap<String, AgentToolPermissionSpec>,
+}
+
+/// Config-neutral permission specification for one tool in an agent profile.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AgentToolPermissionSpec {
+    /// Whether the tool is enabled for this agent.
+    pub enabled: Option<bool>,
+    /// Permission level (`"ask"`, `"auto-accept"`, `"disabled"`).
+    pub permission: Option<String>,
+}
+
+impl AgentProfileCatalog {
+    /// Create a catalog rooted at an agents directory.
+    #[must_use]
+    pub fn new(agents_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            agents_dir: agents_dir.into(),
+            profiles: BTreeMap::new(),
+        }
+    }
+
+    /// Add or replace a configured profile.
+    #[must_use]
+    pub fn with_profile(mut self, name: impl Into<String>, spec: AgentProfileSpec) -> Self {
+        self.profiles.insert(name.into(), spec);
+        self
+    }
+
+    /// Add configured profiles.
+    #[must_use]
+    pub fn with_profiles<I, N>(mut self, profiles: I) -> Self
+    where
+        I: IntoIterator<Item = (N, AgentProfileSpec)>,
+        N: Into<String>,
+    {
+        for (name, spec) in profiles {
+            self.profiles.insert(name.into(), spec);
+        }
+        self
+    }
+
+    /// Write missing built-in constraint files without overwriting user edits.
+    pub fn ensure_builtin_constraint_files(&self) -> io::Result<()> {
+        fs::create_dir_all(&self.agents_dir)?;
+        for name in ["plan", "build", "yolo"] {
+            let path = self.agents_dir.join(format!("{name}_agent.md"));
+            if !path.exists() {
+                let content = builtin_constraint_file_content(name);
+                if !content.is_empty() {
+                    fs::write(path, content)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Materialize all built-in and configured profile permissions.
+    #[must_use]
+    pub fn permissions(&self) -> Vec<AgentPermission> {
+        let mut permissions = builtin_agent_profiles(&self.agents_dir);
+        permissions.extend(
+            self.profiles
+                .iter()
+                .filter(|(name, _)| !is_builtin_agent(name))
+                .map(|(name, spec)| self.permission_from_spec(name, spec)),
+        );
+        permissions
+    }
+
+    /// Build the system prompt for an agent from project context, profile constraints, and memory.
+    #[must_use]
+    pub fn system_prompt(
+        &self,
+        agent_name: &str,
+        project_context: Option<&str>,
+        memory: Option<&str>,
+    ) -> String {
+        let mut parts: Vec<String> = Vec::new();
+
+        if let Some(ctx) = project_context
+            && !ctx.trim().is_empty()
+        {
+            parts.push(format!("## Project Context\n\n{ctx}"));
+        }
+
+        if let Some(constraint) = self.constraint_content(agent_name)
+            && !constraint.trim().is_empty()
+        {
+            parts.push(constraint.to_string());
+        }
+
+        if let Some(mem) = memory
+            && !mem.trim().is_empty()
+        {
+            parts.push(format!("## Memory\n\n{mem}"));
+        }
+
+        parts.join("\n\n")
+    }
+
+    /// Return configured system text or built-in constraint content for an agent.
+    #[must_use]
+    pub fn constraint_content(&self, agent_name: &str) -> Option<&str> {
+        self.profiles
+            .get(agent_name)
+            .and_then(|spec| spec.system.as_deref())
+            .or_else(|| {
+                let content = builtin_constraint_file_content(agent_name);
+                (!content.is_empty()).then_some(content)
+            })
+    }
+
+    fn permission_from_spec(&self, name: &str, spec: &AgentProfileSpec) -> AgentPermission {
+        let tool_permissions = spec
+            .tools
+            .iter()
+            .map(|(tool_name, tool_spec)| {
+                (
+                    ToolName::new(tool_name),
+                    permission_setting_from_spec(tool_spec),
+                )
+            })
+            .collect();
+
+        AgentPermission {
+            agent_name: name.to_string(),
+            tool_permissions,
+            constraint_file: self.agents_dir.join(format!("{name}_agent.md")),
+            hard_permission: None,
+            hard_permission_rules: Vec::new(),
+            model: spec.model.clone(),
+        }
+    }
+}
+
+fn is_builtin_agent(name: &str) -> bool {
+    matches!(name, "plan" | "build" | "yolo")
+}
+
+fn permission_setting_from_spec(spec: &AgentToolPermissionSpec) -> PermissionSetting {
+    match spec.permission.as_deref() {
+        Some("auto-accept" | "auto_accept" | "auto") => PermissionSetting::AutoAccept,
+        Some("ask") => PermissionSetting::Ask,
+        Some("disabled" | "disable" | "deny" | "none") => PermissionSetting::Disabled,
+        _ if spec.enabled == Some(false) => PermissionSetting::Disabled,
+        _ => PermissionSetting::Ask,
+    }
+}
 
 /// Create the three built-in agent profiles.
 #[must_use]

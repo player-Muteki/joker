@@ -357,7 +357,11 @@ fn parse_chat_chunk(
 ) -> Vec<ParsedSse> {
     let chunk = match serde_json::from_str::<ChatChunk>(data) {
         Ok(chunk) => chunk,
-        Err(error) => return vec![ParsedSse::Error(format!("invalid SSE JSON: {error}: {data}"))],
+        Err(error) => {
+            return vec![ParsedSse::Error(format!(
+                "invalid SSE JSON: {error}: {data}"
+            ))];
+        }
     };
 
     if let Some(chunk_usage) = chunk.usage {
@@ -673,19 +677,19 @@ mod tests {
         });
         assert_eq!(finished.expect("finished event").input_tokens, 12);
         assert_eq!(finished.expect("finished event").output_tokens, 3);
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, ParsedSse::Event(ModelResponseEvent::TextDelta(t)) if t == "hi"))
-        );
+        assert!(events.iter().any(
+            |event| matches!(event, ParsedSse::Event(ModelResponseEvent::TextDelta(t)) if t == "hi")
+        ));
     }
 
     #[test]
     fn ignores_role_only_delta_chunk() {
         let mut parser = SseParser::default();
-        let events =
-            parser.push("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n");
-        assert!(events.is_empty(), "role-only chunk is a no-op, not an error");
+        let events = parser.push("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n");
+        assert!(
+            events.is_empty(),
+            "role-only chunk is a no-op, not an error"
+        );
     }
 
     #[test]

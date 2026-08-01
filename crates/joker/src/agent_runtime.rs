@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+use thiserror::Error;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use crate::{
     Agent, ApprovalResponse, Event, Observer, RunError, RunOutcome, RunRequest, StopReason,
@@ -54,6 +56,83 @@ pub enum Op {
     Shutdown,
 }
 
+/// Errors returned when sending commands through [`AgentRuntimeHandle`].
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum RuntimeHandleError {
+    /// The runtime task has already finished or the Op channel has been closed.
+    #[error("agent runtime is no longer accepting commands")]
+    Closed,
+}
+
+/// Host-facing handle for controlling an [`AgentRuntime`] without exposing channels.
+#[derive(Clone, Debug)]
+pub struct AgentRuntimeHandle {
+    tx_op: mpsc::UnboundedSender<Op>,
+}
+
+impl AgentRuntimeHandle {
+    /// Create a handle from an Op sender.
+    #[must_use]
+    pub fn new(tx_op: mpsc::UnboundedSender<Op>) -> Self {
+        Self { tx_op }
+    }
+
+    /// Send a user message to be processed by the runtime.
+    pub fn send_message(&self, text: impl Into<String>) -> Result<(), RuntimeHandleError> {
+        self.send(Op::SendMessage { text: text.into() })
+    }
+
+    /// Cancel the active run.
+    pub fn cancel(&self) -> Result<(), RuntimeHandleError> {
+        self.send(Op::Cancel)
+    }
+
+    /// Inject an interrupt/steering message before the next turn.
+    pub fn interrupt(&self, text: impl Into<String>) -> Result<(), RuntimeHandleError> {
+        self.send(Op::Interrupt { text: text.into() })
+    }
+
+    /// Approve the currently pending tool request.
+    pub fn approve(&self, remember_for_session: bool) -> Result<(), RuntimeHandleError> {
+        self.send(Op::Approve {
+            approved: true,
+            remember_for_session,
+            reason: None,
+        })
+    }
+
+    /// Deny the currently pending tool request.
+    pub fn deny(&self, reason: impl Into<String>) -> Result<(), RuntimeHandleError> {
+        self.send(Op::Approve {
+            approved: false,
+            remember_for_session: false,
+            reason: Some(reason.into()),
+        })
+    }
+
+    /// Request manual compaction.
+    pub fn compact(&self) -> Result<(), RuntimeHandleError> {
+        self.send(Op::Compact)
+    }
+
+    /// Request switching to another agent profile.
+    pub fn switch_agent(&self, name: impl Into<String>) -> Result<(), RuntimeHandleError> {
+        self.send(Op::SwitchAgent { name: name.into() })
+    }
+
+    /// Request graceful shutdown.
+    pub fn shutdown(&self) -> Result<(), RuntimeHandleError> {
+        self.send(Op::Shutdown)
+    }
+
+    fn send(&self, op: Op) -> Result<(), RuntimeHandleError> {
+        self.tx_op.send(op).map_err(|_| RuntimeHandleError::Closed)
+    }
+}
+
+/// Join handle returned by [`AgentRuntime::spawn`].
+pub type AgentRuntimeJoinHandle = JoinHandle<Result<RunOutcome, RunError>>;
+
 /// An agent execution runtime with OpLoop + steer/followUp support.
 pub struct AgentRuntime {
     agent: Agent,
@@ -80,6 +159,15 @@ impl AgentRuntime {
     /// Queue a follow-up message — injected after the tool-call loop ends.
     pub fn follow_up(&self, message: impl Into<String>) {
         self.follow_up_queue.enqueue(message);
+    }
+
+    /// Spawn this runtime on the Tokio executor and return a host-facing control handle.
+    #[must_use]
+    pub fn spawn(self, request: RunRequest) -> (AgentRuntimeHandle, AgentRuntimeJoinHandle) {
+        let (tx_op, mut rx_op) = mpsc::unbounded_channel();
+        let handle = AgentRuntimeHandle::new(tx_op);
+        let join = tokio::spawn(async move { self.run(request, &mut rx_op).await });
+        (handle, join)
     }
 
     /// Drive a full agent run with Op-loop support (steer, cancel, compact, etc.).

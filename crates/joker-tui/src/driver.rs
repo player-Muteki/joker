@@ -10,12 +10,12 @@ use std::{path::PathBuf, sync::Arc};
 use tracing::*;
 
 use joker::{
-    Agent, AgentPermission, ModelResponseEvent, NoopObserver, Observer, ObserverFuture,
-    PermissionEngine, PermissionPolicy, PermissionRule, PermissionSetting, PolicyFuture,
-    PrefixedContextBuilder, RulePattern, RunRequest, ScriptedModel, ScriptedStep,
-    SharedApprovalChannel, StopReason, ToolAnnotations, ToolDecision, ToolDefinition, ToolFn,
-    ToolFuture, ToolInvocation, ToolName, ToolOutput, ToolPolicy, ToolPolicyRequest,
-    assemble_system_prompt, builtin_agent_profiles,
+    Agent, AgentProfileCatalog, AgentProfileSpec, AgentRuntime, AgentRuntimeHandle,
+    AgentToolPermissionSpec, ModelResponseEvent, NoopObserver, Observer, ObserverFuture,
+    PermissionEngine, PermissionPolicy, PermissionRule, PolicyFuture, PrefixedContextBuilder,
+    RulePattern, RunRequest, ScriptedModel, ScriptedStep, SharedApprovalChannel, StopReason,
+    ToolAnnotations, ToolDecision, ToolDefinition, ToolFn, ToolFuture, ToolInvocation, ToolName,
+    ToolOutput, ToolPolicy, ToolPolicyRequest,
 };
 use joker_config::{ProviderSelection, RuntimeConfig};
 use joker_mcp::connect_and_discover;
@@ -59,9 +59,18 @@ pub struct AgentDriver {
     workspace: PathBuf,
     agents_dir: PathBuf,
     compact_pending: bool,
+    agent_catalog: AgentProfileCatalog,
     permission_engine: PermissionEngine,
     active_agent: String,
     mcp_tools: Arc<std::sync::Mutex<Vec<Arc<dyn joker::Tool>>>>,
+}
+
+/// Result returned when spawning an interactive agent run.
+pub struct SpawnedAgentRun {
+    /// Handle for controlling the active runtime via Op messages.
+    pub runtime: AgentRuntimeHandle,
+    /// Task that forwards the runtime result into the TUI event channel.
+    pub task: JoinHandle<()>,
 }
 
 /// Result returned by a non-interactive agent execution.
@@ -80,6 +89,7 @@ impl std::fmt::Debug for AgentDriver {
             .field("workspace", &self.workspace)
             .field("agents_dir", &self.agents_dir)
             .field("compact_pending", &self.compact_pending)
+            .field("agent_catalog", &"AgentProfileCatalog")
             .field("active_agent", &self.active_agent)
             .field("mcp_tools", &self.mcp_tools.lock().unwrap().len())
             .finish()
@@ -107,30 +117,17 @@ impl AgentDriver {
     ) -> Self {
         let workspace: PathBuf = workspace.into();
         let agents_dir: PathBuf = agents_dir.into();
-        // Write built-in constraint files if they don't exist
-        let _ = std::fs::create_dir_all(&agents_dir);
-        for name in &["plan", "build", "yolo"] {
-            let path = agents_dir.join(format!("{name}_agent.md"));
-            if !path.exists() {
-                let content = joker::builtin_constraint_file_content(name);
-                if !content.is_empty() {
-                    let _ = std::fs::write(&path, content);
-                }
-            }
-        }
+        let agent_catalog = AgentProfileCatalog::new(agents_dir.clone()).with_profiles(
+            runtime_config
+                .agent_configs
+                .iter()
+                .map(|(name, cfg)| (name.clone(), profile_spec_from_config(cfg))),
+        );
+        let _ = agent_catalog.ensure_builtin_constraint_files();
 
         let mut engine = PermissionEngine::new();
-        // Register built-in agent profiles (plan, build, yolo)
-        let builtins = builtin_agent_profiles(&agents_dir);
-        for profile in builtins {
+        for profile in agent_catalog.permissions() {
             engine.register(profile);
-        }
-        // Register custom agent profiles from config
-        for (name, agent_cfg) in &runtime_config.to_file_config().agent {
-            if !["plan", "build", "yolo"].contains(&name.as_str()) {
-                let permission = agent_permission_from_config(name, agent_cfg, &agents_dir);
-                engine.register(permission);
-            }
         }
 
         Self {
@@ -139,6 +136,7 @@ impl AgentDriver {
             workspace,
             agents_dir,
             compact_pending: false,
+            agent_catalog,
             permission_engine: engine,
             active_agent: "build".into(),
             mcp_tools: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -199,17 +197,24 @@ impl AgentDriver {
         cancellation_token: CancellationToken,
         tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
         approval_channel: SharedApprovalChannel,
-    ) -> Result<JoinHandle<()>, TuiError> {
-        debug!(target: "tui.driver", "spawning agent run");
+    ) -> Result<SpawnedAgentRun, TuiError> {
+        debug!(target: "tui.driver", "spawning agent runtime");
         let observer = Arc::new(ChannelObserver::new(tx.clone()));
         let agent = self.build_agent(observer, Some(approval_channel.clone()))?;
-        Ok(tokio::spawn(async move {
-            let request = RunRequest::new(prompt)
-                .with_cancellation_token(cancellation_token)
-                .with_approval_channel(approval_channel);
-            let result = agent.run(request).await.map_err(|error| error.to_string());
+        let request = RunRequest::new(prompt).with_cancellation_token(cancellation_token);
+        let runtime = AgentRuntime::new(agent);
+        let (runtime_handle, join) = runtime.spawn(request);
+        let task = tokio::spawn(async move {
+            let result = match join.await {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
             let _ = tx.send(UiEvent::RunCompleted(result));
-        }))
+        });
+        Ok(SpawnedAgentRun {
+            runtime: runtime_handle,
+            task,
+        })
     }
 
     /// Spawn an async agent run that continues from an existing conversation.
@@ -219,17 +224,25 @@ impl AgentDriver {
         cancellation_token: CancellationToken,
         tx: tokio::sync::mpsc::UnboundedSender<UiEvent>,
         approval_channel: SharedApprovalChannel,
-    ) -> Result<JoinHandle<()>, TuiError> {
-        debug!(target: "tui.driver", message_count = conversation.messages().len(), "spawning agent run with conversation");
+    ) -> Result<SpawnedAgentRun, TuiError> {
+        debug!(target: "tui.driver", message_count = conversation.messages().len(), "spawning agent runtime with conversation");
         let observer = Arc::new(ChannelObserver::new(tx.clone()));
         let agent = self.build_agent(observer, Some(approval_channel.clone()))?;
-        Ok(tokio::spawn(async move {
-            let request = RunRequest::with_conversation(conversation)
-                .with_cancellation_token(cancellation_token)
-                .with_approval_channel(approval_channel);
-            let result = agent.run(request).await.map_err(|error| error.to_string());
+        let request =
+            RunRequest::with_conversation(conversation).with_cancellation_token(cancellation_token);
+        let runtime = AgentRuntime::new(agent);
+        let (runtime_handle, join) = runtime.spawn(request);
+        let task = tokio::spawn(async move {
+            let result = match join.await {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
             let _ = tx.send(UiEvent::RunCompleted(result));
-        }))
+        });
+        Ok(SpawnedAgentRun {
+            runtime: runtime_handle,
+            task,
+        })
     }
 
     /// Set or clear the pending-compaction flag for the next agent run.
@@ -343,7 +356,9 @@ impl AgentDriver {
         agent = agent.with_policy(policy);
 
         // Wrap context builder with system prompt from agent profile
-        let system_prompt = assemble_system_prompt(&self.active_agent, None, None);
+        let system_prompt = self
+            .agent_catalog
+            .system_prompt(&self.active_agent, None, None);
         let inner: Box<dyn joker::ContextBuilder> = if self.compact_pending {
             Box::new(
                 joker::CompactingContextBuilder::new(Box::new(joker::PassthroughContextBuilder))
@@ -579,37 +594,24 @@ impl ToolPolicy for ChainPolicy {
     }
 }
 
-/// Convert an `AgentProfileConfig` from the config layer into an `AgentPermission`.
-fn agent_permission_from_config(
-    name: &str,
-    cfg: &joker_config::AgentProfileConfig,
-    agents_dir: &std::path::Path,
-) -> AgentPermission {
-    use std::collections::HashMap;
-    let mut perms = HashMap::new();
-    for (tool_name, tool_cfg) in &cfg.tools {
-        let setting = match tool_cfg.permission.as_deref() {
-            Some("auto-accept" | "auto_accept" | "auto") => PermissionSetting::AutoAccept,
-            Some("ask") => PermissionSetting::Ask,
-            Some("disabled" | "disable" | "deny" | "none") => PermissionSetting::Disabled,
-            _ => {
-                // If enabled is explicitly false, disable; otherwise default to Ask
-                if tool_cfg.enabled == Some(false) {
-                    PermissionSetting::Disabled
-                } else {
-                    PermissionSetting::Ask
-                }
-            }
-        };
-        perms.insert(ToolName::new(tool_name), setting);
-    }
-    AgentPermission {
-        agent_name: name.to_string(),
-        tool_permissions: perms,
-        constraint_file: agents_dir.join(format!("{name}_agent.md")),
-        hard_permission: None,
-        hard_permission_rules: Vec::new(),
-        model: None,
+/// Convert an `AgentProfileConfig` from the config layer into a core profile spec.
+fn profile_spec_from_config(cfg: &joker_config::AgentProfileConfig) -> AgentProfileSpec {
+    AgentProfileSpec {
+        model: cfg.model.clone(),
+        system: cfg.system.clone(),
+        tools: cfg
+            .tools
+            .iter()
+            .map(|(name, tool_cfg)| {
+                (
+                    name.clone(),
+                    AgentToolPermissionSpec {
+                        enabled: tool_cfg.enabled,
+                        permission: tool_cfg.permission.clone(),
+                    },
+                )
+            })
+            .collect(),
     }
 }
 

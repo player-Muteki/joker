@@ -53,13 +53,19 @@ mod tests {
     fn classifies_status_codes() {
         assert_eq!(classify_error(401, "invalid key", ""), ModelErrorKind::Auth);
         assert_eq!(classify_error(403, "forbidden", ""), ModelErrorKind::Auth);
-        assert_eq!(classify_error(402, "quota exceeded", ""), ModelErrorKind::Quota);
+        assert_eq!(
+            classify_error(402, "quota exceeded", ""),
+            ModelErrorKind::Quota
+        );
         assert_eq!(
             classify_error(429, "rate limit", ""),
             ModelErrorKind::RateLimited
         );
         assert_eq!(classify_error(500, "internal", ""), ModelErrorKind::Network);
-        assert_eq!(classify_error(503, "overloaded", ""), ModelErrorKind::Network);
+        assert_eq!(
+            classify_error(503, "overloaded", ""),
+            ModelErrorKind::Network
+        );
         assert_eq!(classify_error(408, "timeout", ""), ModelErrorKind::Network);
         assert_eq!(classify_error(200, "ok", ""), ModelErrorKind::Unknown);
         assert_eq!(classify_error(418, "teapot", ""), ModelErrorKind::Unknown);

@@ -18,7 +18,7 @@ async fn scripted_driver_sends_agent_events_and_completion() {
         std::env::current_dir().unwrap(),
     );
 
-    let handle = driver
+    let spawned = driver
         .spawn_run(
             "hello".into(),
             CancellationToken::new(),
@@ -43,7 +43,7 @@ async fn scripted_driver_sends_agent_events_and_completion() {
         }
     }
 
-    handle.await.unwrap();
+    spawned.task.await.unwrap();
     assert!(saw_delta);
     assert!(completed);
 }
@@ -59,7 +59,7 @@ async fn scripted_driver_completes_with_writeable_tools() {
         std::env::current_dir().unwrap(),
     );
 
-    let handle = driver
+    let spawned = driver
         .spawn_run(
             "test".into(),
             CancellationToken::new(),
@@ -77,7 +77,54 @@ async fn scripted_driver_completes_with_writeable_tools() {
         }
     }
 
-    handle.await.unwrap();
+    spawned.task.await.unwrap();
+    assert!(completed);
+}
+
+#[tokio::test]
+async fn runtime_handle_controls_active_driver_run() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let driver = AgentDriver::new(
+        RuntimeConfig {
+            scripted_response: "done".into(),
+            ..RuntimeConfig::default()
+        },
+        std::env::current_dir().unwrap(),
+    );
+
+    let spawned = driver
+        .spawn_run(
+            "test".into(),
+            CancellationToken::new(),
+            tx,
+            SharedApprovalChannel::new(),
+        )
+        .unwrap();
+
+    spawned.runtime.compact().unwrap();
+    spawned.runtime.switch_agent("plan").unwrap();
+
+    let mut compact_started = false;
+    let mut agent_switched = false;
+    let mut completed = false;
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
+        match event {
+            UiEvent::Agent(joker::Event::CompactionStarted { .. }) => compact_started = true,
+            UiEvent::Agent(joker::Event::AgentSwitched { to, .. }) if to == "plan" => {
+                agent_switched = true;
+            }
+            UiEvent::RunCompleted(result) => {
+                assert!(result.is_ok(), "run failed: {result:?}");
+                completed = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    spawned.task.await.unwrap();
+    assert!(compact_started);
+    assert!(agent_switched);
     assert!(completed);
 }
 

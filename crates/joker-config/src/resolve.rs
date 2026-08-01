@@ -85,9 +85,7 @@ fn env_prefix(provider: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{
-        ModelConfig, ProviderConfig, ProviderOptionsConfig,
-    };
+    use crate::types::{ModelConfig, ProviderConfig, ProviderOptionsConfig};
     use joker_provider::{CredentialSource, Framing, Protocol};
 
     #[test]
@@ -120,8 +118,7 @@ mod tests {
         };
 
         let config = resolve_config(file, ConfigOverrides::default()).expect("resolve");
-        let ProviderSelection::Route(route) = &config.provider
-        else {
+        let ProviderSelection::Route(route) = &config.provider else {
             panic!("expected route");
         };
         assert_eq!(route.id, "myllm");
@@ -156,8 +153,7 @@ mod tests {
         };
 
         let config = resolve_config(file, ConfigOverrides::default()).expect("resolve");
-        let ProviderSelection::Route(route) = &config.provider
-        else {
+        let ProviderSelection::Route(route) = &config.provider else {
             panic!("expected route");
         };
         assert_eq!(

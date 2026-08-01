@@ -299,15 +299,18 @@ impl Route {
 /// Human-readable message for a missing API key, naming the expected env var.
 fn missing_key_message(provider: &str, auth: &Auth) -> String {
     match &auth.credentials {
-        CredentialSource::EnvVar(name) => format!(
-            "{provider} API key not configured (set {name} or enter it via /provider)"
-        ),
+        CredentialSource::EnvVar(name) => {
+            format!("{provider} API key not configured (set {name} or enter it via /provider)")
+        }
         _ => format!("{provider} API key not configured"),
     }
 }
 
 /// Merge provider-level and model-level extra body fields (model wins).
-fn merge_extra_body(a: Option<serde_json::Value>, b: Option<serde_json::Value>) -> Option<serde_json::Value> {
+fn merge_extra_body(
+    a: Option<serde_json::Value>,
+    b: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
     match (a, b) {
         (Some(serde_json::Value::Object(mut base)), Some(serde_json::Value::Object(overlay))) => {
             base.extend(overlay);

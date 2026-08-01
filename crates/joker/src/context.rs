@@ -621,31 +621,9 @@ pub fn assemble_system_prompt(
     project_context: Option<&str>,
     memory: Option<&str>,
 ) -> String {
-    let mut parts: Vec<String> = Vec::new();
-
-    // 1. Project context
-    if let Some(ctx) = project_context
-        && !ctx.trim().is_empty()
-    {
-        parts.push(format!("## Project Context\n\n{ctx}"));
-    }
-
-    // 2. Agent constraint file
-    let constraint = crate::agent_profiles::builtin_constraint_file_content(agent_name);
-    if !constraint.is_empty() {
-        parts.push(constraint.to_string());
-    }
-
-    // 3. Memory
-    if let Some(mem) = memory
-        && !mem.trim().is_empty()
-    {
-        parts.push(format!("## Memory\n\n{mem}"));
-    }
-
-    if parts.is_empty() {
-        return String::new();
-    }
-
-    parts.join("\n\n")
+    crate::AgentProfileCatalog::new(std::path::PathBuf::new()).system_prompt(
+        agent_name,
+        project_context,
+        memory,
+    )
 }

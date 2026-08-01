@@ -40,8 +40,13 @@ mod web_search;
 
 pub use agent::{Agent, AgentBuilder};
 pub use agent_config::{AgentConfig, ExecutionMode, RetryConfig, RunLimits};
-pub use agent_profiles::{builtin_agent_profiles, builtin_constraint_file_content};
-pub use agent_runtime::{AgentRuntime, Op};
+pub use agent_profiles::{
+    AgentProfileCatalog, AgentProfileSpec, AgentToolPermissionSpec, builtin_agent_profiles,
+    builtin_constraint_file_content,
+};
+pub use agent_runtime::{
+    AgentRuntime, AgentRuntimeHandle, AgentRuntimeJoinHandle, Op, RuntimeHandleError,
+};
 pub use agent_types::{RunOutcome, RunRequest, TurnOutcome};
 pub use context::{
     BuiltContext, CompactingContextBuilder, CompactionLevel, ContextBuilder, ContextError,

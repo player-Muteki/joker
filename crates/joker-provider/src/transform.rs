@@ -255,7 +255,11 @@ mod tests {
         assert!(matches!(result[0].content[1], Content::Reasoning(_)));
 
         let result = ensure_reasoning_for_model(&msgs, "deepseek-v4", Some(false));
-        assert_eq!(result[0].content.len(), 1, "capability=false overrides name heuristic");
+        assert_eq!(
+            result[0].content.len(),
+            1,
+            "capability=false overrides name heuristic"
+        );
     }
 
     #[test]

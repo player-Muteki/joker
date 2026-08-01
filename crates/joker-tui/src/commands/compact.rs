@@ -1,6 +1,6 @@
 use joker_config::ConfigStore;
 
-use crate::app::{App, TranscriptItem};
+use crate::app::App;
 
 use super::{CommandInfo, CommandResult, SlashCommand};
 
@@ -22,12 +22,19 @@ impl SlashCommand for CompactCommand {
         _args: Option<&str>,
         _config_store: &ConfigStore,
     ) -> CommandResult {
-        app.compact_requested = true;
-        app.transcript.push(TranscriptItem::Status(
-            "Context compaction requested. SummaryContextBuilder will activate on next run.".into(),
-        ));
-        CommandResult::message(
-            "Compact request sent. The next agent run will use summary-based context.",
-        )
+        if app.running
+            && let Some(handle) = &app.runtime_handle
+        {
+            app.compact_requested = false;
+            match handle.compact() {
+                Ok(()) => CommandResult::message("Compact request sent to the active runtime."),
+                Err(error) => CommandResult::error(error.to_string()),
+            }
+        } else {
+            app.compact_requested = true;
+            CommandResult::message(
+                "Compact request sent. The next agent run will use summary-based context.",
+            )
+        }
     }
 }

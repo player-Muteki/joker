@@ -7,8 +7,7 @@
 use std::collections::BTreeMap;
 
 use joker_provider::{
-    ModelCapabilities, ModelInfo, ModelLimit, ModelOptions, Protocol, ProviderOptions,
-    ProviderSpec,
+    ModelCapabilities, ModelInfo, ModelLimit, ModelOptions, Protocol, ProviderOptions, ProviderSpec,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -316,7 +315,10 @@ mod tests {
 
         let model = spec.models.get("claude-x").expect("model entry");
         assert!(model.capabilities.toolcall, "toolcall defaults to true");
-        assert!(model.capabilities.temperature, "temperature defaults to true");
+        assert!(
+            model.capabilities.temperature,
+            "temperature defaults to true"
+        );
         assert!(model.capabilities.reasoning);
         assert_eq!(model.limit.context, 200_000);
     }

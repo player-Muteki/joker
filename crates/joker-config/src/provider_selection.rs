@@ -1,8 +1,8 @@
 //! Provider selection — maps provider names to routes or scripted mode.
 
+use crate::error::ConfigError;
 use joker_provider::{Auth, Framing, Protocol, Route, preset_spec};
 use tracing::info;
-use crate::error::ConfigError;
 
 /// Represents the active provider: either a scripted echo provider or a routed LLM.
 ///

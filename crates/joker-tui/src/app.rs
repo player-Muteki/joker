@@ -7,7 +7,7 @@
 //! [`UiEvent`]s back through [`App::apply_ui_event`].
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use joker::SharedApprovalChannel;
+use joker::{AgentRuntimeHandle, SharedApprovalChannel};
 use joker_config::{ProviderSelection, RuntimeConfig};
 use std::fmt;
 use std::sync::Arc;
@@ -59,6 +59,8 @@ pub struct App {
     pub scroll: u16,
     /// Token used to cancel the current agent run.
     pub cancellation_token: Option<CancellationToken>,
+    /// Handle used to control the active agent runtime.
+    pub runtime_handle: Option<AgentRuntimeHandle>,
     /// Provider/model configuration for the current session.
     pub runtime_config: RuntimeConfig,
     /// Active modal dialog, if any.
@@ -153,6 +155,10 @@ impl fmt::Debug for App {
             .field("should_quit", &self.should_quit)
             .field("status", &self.status)
             .field("scroll", &self.scroll)
+            .field(
+                "runtime_handle",
+                &self.runtime_handle.as_ref().map(|_| "AgentRuntimeHandle"),
+            )
             .field("runtime_config", &self.runtime_config)
             .field("dialog", &self.dialog)
             .field("approval_channel", &self.approval_channel)
@@ -202,6 +208,7 @@ impl App {
             status,
             scroll: 0,
             cancellation_token: None,
+            runtime_handle: None,
             runtime_config,
             dialog: None,
             approval_channel: None,
@@ -541,12 +548,15 @@ impl App {
         Some(AppAction::Redraw)
     }
 
-    /// Cancel the currently running agent via its [`CancellationToken`].
+    /// Cancel the currently running agent via its runtime handle.
     pub fn cancel_running(&mut self) {
-        if let Some(token) = &self.cancellation_token {
+        if let Some(handle) = &self.runtime_handle {
+            let _ = handle.cancel();
+        } else if let Some(token) = &self.cancellation_token {
             token.cancel();
         }
         self.cancellation_token = None;
+        self.runtime_handle = None;
         self.running = false;
         self.status = "Cancelled".into();
         self.transcript
@@ -568,7 +578,9 @@ impl App {
 
     /// Approve a pending tool-approval request by `request_id`.
     pub fn approve_pending(&mut self, request_id: &str, remember_for_session: bool) {
-        if let Some(channel) = &self.approval_channel {
+        if let Some(handle) = &self.runtime_handle {
+            let _ = handle.approve(remember_for_session);
+        } else if let Some(channel) = &self.approval_channel {
             channel.respond(joker::ApprovalResponse::Approved {
                 remember_for_session,
             });
@@ -579,9 +591,12 @@ impl App {
 
     /// Deny a pending tool-approval request by `request_id`, optionally providing a `reason`.
     pub fn deny_pending(&mut self, request_id: &str, reason: Option<&str>) {
-        if let Some(channel) = &self.approval_channel {
+        let reason = reason.unwrap_or("denied by user");
+        if let Some(handle) = &self.runtime_handle {
+            let _ = handle.deny(reason);
+        } else if let Some(channel) = &self.approval_channel {
             channel.respond(joker::ApprovalResponse::Denied {
-                reason: reason.unwrap_or("denied by user").to_string(),
+                reason: reason.to_string(),
             });
         }
         self.transcript
@@ -605,6 +620,7 @@ impl App {
             UiEvent::RunCompleted(result) => {
                 self.running = false;
                 self.cancellation_token = None;
+                self.runtime_handle = None;
                 self.approval_channel = None;
                 match result {
                     Ok(outcome) => {

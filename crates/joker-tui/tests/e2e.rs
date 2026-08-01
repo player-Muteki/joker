@@ -2,10 +2,10 @@
 //! lifecycle: construction → constraint file generation → agent run with
 //! scripted model → event stream verification → completion.
 
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use joker::SharedApprovalChannel;
-use joker_config::RuntimeConfig;
+use joker_config::{AgentProfileConfig, RuntimeConfig, ToolPermissionConfig};
 use joker_tui::driver::AgentDriver;
 use joker_tui::event::UiEvent;
 use tokio::sync::mpsc;
@@ -47,7 +47,7 @@ async fn e2e_golden_path_scripted_run() {
 
     // 4. Spawn a run with scripted model
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let handle = driver
+    let spawned = driver
         .spawn_run(
             "Write a hello world program".into(),
             CancellationToken::new(),
@@ -76,7 +76,7 @@ async fn e2e_golden_path_scripted_run() {
         }
     }
 
-    handle.await.unwrap();
+    spawned.task.await.unwrap();
     assert!(
         saw_delta,
         "should receive text delta from scripted response"
@@ -142,7 +142,51 @@ async fn e2e_permission_engine_has_builtin_profiles() {
     );
 }
 
-/// Verify that compact mode can be toggled on the driver.
+#[tokio::test]
+async fn e2e_custom_agent_profile_permissions_load_from_catalog() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let workspace = temp_dir.path().to_path_buf();
+
+    let driver = AgentDriver::new(
+        RuntimeConfig {
+            agent_configs: BTreeMap::from([(
+                "review".into(),
+                AgentProfileConfig {
+                    tools: BTreeMap::from([
+                        (
+                            "read_file".into(),
+                            ToolPermissionConfig {
+                                enabled: None,
+                                permission: Some("auto-accept".into()),
+                            },
+                        ),
+                        (
+                            "write_file".into(),
+                            ToolPermissionConfig {
+                                enabled: Some(false),
+                                permission: None,
+                            },
+                        ),
+                    ]),
+                    ..AgentProfileConfig::default()
+                },
+            )]),
+            ..RuntimeConfig::default()
+        },
+        workspace,
+    );
+
+    let engine = driver.permission_engine();
+    assert_eq!(
+        engine.evaluate("review", &joker::ToolName::new("read_file"), false, None),
+        joker::PermissionDecision::Allow
+    );
+    assert!(matches!(
+        engine.evaluate("review", &joker::ToolName::new("write_file"), true, None),
+        joker::PermissionDecision::Deny { .. }
+    ));
+}
+
 #[tokio::test]
 async fn e2e_compact_toggle() {
     let temp_dir = tempfile::TempDir::new().unwrap();
@@ -213,8 +257,8 @@ async fn e2e_concurrent_runs() {
         }
     }
 
-    h1.await.unwrap();
-    h2.await.unwrap();
+    h1.task.await.unwrap();
+    h2.task.await.unwrap();
 }
 
 /// Verify that scripted model produces Finished event with correct stop reason.
@@ -232,7 +276,7 @@ async fn e2e_scripted_model_stop_reason() {
     );
 
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let handle = driver
+    let spawned = driver
         .spawn_run(
             "test prompt".into(),
             CancellationToken::new(),
@@ -250,7 +294,7 @@ async fn e2e_scripted_model_stop_reason() {
         }
     }
 
-    handle.await.unwrap();
+    spawned.task.await.unwrap();
     assert!(
         finished,
         "should receive ModelFinished with StopReason::Stop"
