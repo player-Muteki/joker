@@ -578,12 +578,12 @@ impl App {
 
     /// Approve a pending tool-approval request by `request_id`.
     pub fn approve_pending(&mut self, request_id: &str, remember_for_session: bool) {
-        if let Some(handle) = &self.runtime_handle {
-            let _ = handle.approve(remember_for_session);
-        } else if let Some(channel) = &self.approval_channel {
+        if let Some(channel) = &self.approval_channel {
             channel.respond(joker::ApprovalResponse::Approved {
                 remember_for_session,
             });
+        } else if let Some(handle) = &self.runtime_handle {
+            let _ = handle.approve(remember_for_session);
         }
         self.transcript
             .push(TranscriptItem::Status(format!("Approved: {request_id}")));
@@ -592,12 +592,12 @@ impl App {
     /// Deny a pending tool-approval request by `request_id`, optionally providing a `reason`.
     pub fn deny_pending(&mut self, request_id: &str, reason: Option<&str>) {
         let reason = reason.unwrap_or("denied by user");
-        if let Some(handle) = &self.runtime_handle {
-            let _ = handle.deny(reason);
-        } else if let Some(channel) = &self.approval_channel {
+        if let Some(channel) = &self.approval_channel {
             channel.respond(joker::ApprovalResponse::Denied {
                 reason: reason.to_string(),
             });
+        } else if let Some(handle) = &self.runtime_handle {
+            let _ = handle.deny(reason);
         }
         self.transcript
             .push(TranscriptItem::Status(format!("Denied: {request_id}")));

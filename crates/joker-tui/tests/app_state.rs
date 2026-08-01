@@ -1,7 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use joker::{ApprovalResponse, SharedApprovalChannel};
 use joker_tui::app::{App, AppAction, ToolState, TranscriptItem};
 use joker_tui::event::UiEvent;
 use serde_json::json;
+use tokio::sync::mpsc;
 
 #[test]
 fn edits_and_submits_prompt() {
@@ -86,6 +88,29 @@ fn applies_tool_result_to_existing_tool_item() {
             state: ToolState::Done(r#"{"echo":"hi"}"#.into())
         })
     );
+}
+
+#[test]
+fn approvals_respond_through_channel_even_with_runtime_handle() {
+    let mut app = App::new();
+    let channel = SharedApprovalChannel::new();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    app.approval_channel = Some(channel.clone());
+    app.runtime_handle = Some(joker::AgentRuntimeHandle::new(tx));
+
+    app.approve_pending("req-1", true);
+    assert!(matches!(
+        channel.take_response(),
+        Some(ApprovalResponse::Approved {
+            remember_for_session: true
+        })
+    ));
+
+    app.deny_pending("req-2", Some("no"));
+    assert!(matches!(
+        channel.take_response(),
+        Some(ApprovalResponse::Denied { reason }) if reason == "no"
+    ));
 }
 
 #[test]
